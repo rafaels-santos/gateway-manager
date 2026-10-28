@@ -9,4 +9,14 @@ services:
 volumes:
   gateway-manager-data:
 x-casaos:
+  main: gateway-manager
+  title:
+    en_US: Gateway Manager
+    en_us: Gateway Manager
+    pt_BR: Gateway Manager
+    pt_br: Gateway Manager
+  category: Network
+  scheme: http
+  index: /
+  port_map: "8080"
   icon: https://raw.githubusercontent.com/rafaels-santos/gateway-manager/master/static/icon.png
