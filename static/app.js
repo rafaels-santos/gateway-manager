@@ -158,22 +158,45 @@ $('#reboot-form').addEventListener('submit',async e=>{e.preventDefault(); if($('
 
 $('#block-client').addEventListener('click',async e=>{const d=currentDevice;if(!d||d.type!=='wifi')return;if(d.block_rule){if(!confirm(`${d.block_active===false?'Remover regra inativa de':'Desbloquear'} ${d.name||d.hostname||d.mac.toUpperCase()} na rede ${d.port}?`))return;const button=e.currentTarget;button.disabled=true;try{await api('/api/unblock',{mac:d.mac,rule:d.block_rule,confirm:'DESBLOQUEAR'});$('#device-dialog').close();message('Regra de bloqueio removida e confirmada pelo Huawei.');await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}return}if(!confirm(`Bloquear ${d.name||d.hostname||d.mac.toUpperCase()} na rede ${d.port}? O dispositivo perderá acesso. Se o filtro estiver desativado e sem regras, ele será ativado. Para desfazer, use a aba Bloqueados.`))return;const button=e.currentTarget;button.disabled=true;try{await api('/api/block',{mac:d.mac,confirm:'BLOQUEAR',activate:true});message('Regra de bloqueio confirmada pelo Huawei.');$('#device-dialog').close();await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}});
 
-let logEvents=[];
+let logEvents=[], logSource='user', logRaw='', logRequest=0;
+const logDescriptions={user:'User Logs: ações de administração e configuração, comandos, alarmes e eventos do sistema. Úteis para investigar reinícios e alterações no roteador.',ap:'AP Logs: registros dos pontos de acesso disponibilizados pelo Huawei, incluindo eventos técnicos de portas e conectividade. Nesta versão, o painel AP não possui filtro por Config/Shell/Alarm. Complementam os User Logs na investigação de problemas da rede sem fio.'};
+function readableLog(event){
+  const text=event.message.replace(/\s+/g,' ').trim();
+  const port=/PortIndex:(\d+)/.exec(text);
+  if(port && /LinkMode/.test(text)) return `Porta ${port[1]}: registro de negociação do enlace — ${text}`;
+  if(port && /Enable:1/.test(text)) return `Porta ${port[1]} habilitada — ${text}`;
+  if(/Device reset\./i.test(text)) return `Reinício do equipamento registrado — ${text}`;
+  if(/Time synchronized successfully/i.test(text)) return `Relógio sincronizado — ${text}`;
+  if(/System power-on time/i.test(text)) return `Inicialização do sistema — ${text}`;
+  if(/Result:Success/.test(text)) return `Operação concluída — ${text}`;
+  if(/Result:(Fail|Failure)/i.test(text)) return `Falha na operação — ${text}`;
+  return text;
+}
 function renderLogs(){
-  const level=$('#log-level').value, list=$('#log-events'); list.replaceChildren();
-  const events=logEvents.filter(e=>!level||e.level===level);
+  const query=$('#log-search').value.trim().toLocaleLowerCase('pt-BR'),level=$('#log-level').value,category=$('#log-category').value,list=$('#log-events');list.replaceChildren();
+  const events=logEvents.filter(e=>(!level||e.level===level)&&(!category||e.category===category)&&(!query||`${e.time} ${e.source_level} ${e.category} ${e.message}`.toLocaleLowerCase('pt-BR').includes(query)));
   if(!events.length) list.append(node('p','muted','Nenhum evento para este filtro.'));
   for(const event of events){
-    const row=node('article','log-event'), badge=node('span',`log-badge log-${event.level.toLowerCase()}`,event.level);
-    const body=node('div','log-body'), meta=node('div','log-meta',`${event.time} · ${event.category} · Nível Huawei: ${event.source_level}`);
-    body.append(meta,node('p','log-text',event.message)); row.append(badge,body); list.append(row);
+    const row=node('div','log-line');row.title=`${event.time} [${event.source_level}] [${event.category}] ${event.message}`;
+    row.append(node('span',`log-badge log-${event.level.toLowerCase()}`,event.level),node('span','log-line-text',`${event.time || 'Sem horário'} · ${event.category || 'Registro'} · ${readableLog(event)}`));
+    list.append(row);
   }
 }
 async function loadLogs(){
-  const button=$('#refresh-logs'), status=$('#log-status'); button.disabled=true; status.textContent='Consultando Huawei…';
-  try{const result=await api('/api/logs');logEvents=result.events;renderLogs();status.textContent=`${result.total} eventos${result.limited?' · exibindo os últimos 1.000':''} · Atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;}
-  catch(e){logEvents=[];$('#log-events').replaceChildren();status.textContent=e.message;}
-  finally{button.disabled=false;}
+  const request=++logRequest,source=logSource,button=$('#refresh-logs'),status=$('#log-status');button.disabled=true;$('#download-logs').disabled=true;status.textContent='Consultando Huawei…';logRaw='';logEvents=[];$('#log-events').replaceChildren();
+  $('#log-description').textContent=logDescriptions[source];
+  try{const result=await api(`/api/logs?source=${source}`);if(request!==logRequest)return;logEvents=result.events;logRaw=result.raw;
+    const select=$('#log-category');select.hidden=source==='ap';$('#log-category-label').hidden=source==='ap';select.replaceChildren();const all=node('option','','Todos');all.value='';select.append(all);
+    for(const category of result.categories){const option=node('option','',category+'s');option.value=category;select.append(option);}
+    renderLogs();$('#download-logs').disabled=!logRaw;status.textContent=`${result.total} registros${result.limited?' · exibindo os últimos 1.000':''} · Atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;
+  }catch(e){if(request===logRequest)status.textContent=e.message;}
+  finally{if(request===logRequest)button.disabled=false;}
 }
+function selectLogs(source){logSource=source;for(const key of ['user','ap']){const button=$(`#logs-${key}`);button.classList.toggle('active',source===key);button.setAttribute('aria-pressed',String(source===key));}$('#log-level').value='';loadLogs();}
+$('#logs-user').addEventListener('click',()=>selectLogs('user'));
+$('#logs-ap').addEventListener('click',()=>selectLogs('ap'));
 $('#refresh-logs').addEventListener('click',loadLogs);
 $('#log-level').addEventListener('change',renderLogs);
+$('#log-category').addEventListener('change',renderLogs);
+$('#log-search').addEventListener('input',renderLogs);
+$('#download-logs').addEventListener('click',()=>{if(!logRaw)return;const url=URL.createObjectURL(new Blob([logRaw],{type:'text/plain;charset=utf-8'})),link=node('a');link.href=url;link.download=`huawei-${logSource}-${new Date().toISOString().replace(/[:.]/g,'-')}.log`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);});

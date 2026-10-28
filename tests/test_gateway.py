@@ -20,6 +20,17 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_ap_logs_preserve_raw_and_parse_single_level_records(self):
+        gw=FakeGateway()
+        raw='Manufacturer:Huawei;\n2026-10-28 12:00:00 [Notice] ACCESS Set PortIndex:1 Enable:1\n2026-10-28 12:00:01 [Warning] BBSP link warning'
+        gw.page="var ApLogInfoText = '"+''.join('\\x%02x'%ord(c) for c in raw)+"';"
+        result=gw.logs('ap')
+        self.assertEqual(result['raw'],raw)
+        self.assertEqual(result['source'],'ap')
+        self.assertEqual(result['categories'],[])
+        self.assertEqual([e['level'] for e in result['events']],['WAR','INFO'])
+        self.assertEqual(gw.writes,[])
+
     def test_custom_event_template_and_discord_mentions_safety(self):
         with patch.object(app,'send_discord') as send:
             app.send_event('url','discord','ip_changed','{name}: {previous_ip} → {ip} {mac} {link}',{'mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.1.2'},'Celular','http://app','192.168.1.1')
@@ -79,6 +90,9 @@ class GatewayTests(unittest.TestCase):
         gw.page="<script>document.getElementById(\"logarea\").value='"+encoded+"';</script>"
         result=gw.logs()
         self.assertEqual(result['total'],4)
+        self.assertEqual(result['raw'],raw)
+        self.assertEqual(result['categories'],['Config-Log','Shell-Log','Alarm-Log'])
+        with self.assertRaises(GatewayError): gw.logs('../admin')
         self.assertEqual([e['level'] for e in result['events']],['INFO','ERROR','ERROR','WAR'])
         self.assertEqual(result['events'][1]['source_level'],'Critical')
         self.assertIn('Device reset',result['events'][2]['message'])

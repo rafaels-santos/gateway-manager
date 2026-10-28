@@ -340,10 +340,13 @@ class Gateway:
             self.request('/del.cgi?'+urllib.parse.urlencode({'RequestFile':path.lstrip('/')}), {domain:'','x.X_HW_Token':self.config_token()}, referer=path)
             if any(r[0]==domain for r in self.block_policy()['rules']): raise GatewayError('A remoção não foi confirmada pelo Huawei; confira no painel antes de tentar novamente.')
 
-    def logs(self):
+    def logs(self, source='user'):
+        paths={'user':'/html/ssmp/userlog/logview.asp','ap':'/html/ssmp/aplog/aplogview.asp'}
+        if source not in paths: raise GatewayError('Origem de logs não suportada.')
         # Read the same page as Maintenance > User Log; never change logging settings.
-        page = self.request('/html/ssmp/userlog/logview.asp')
+        page = self.request(paths[source])
         match = re.search(r"document\.getElementById\([\"']logarea[\"']\)\.value\s*=\s*'((?:\\.|[^'\\])*)'", page)
+        if source=='ap': match=re.search(r"var\s+ApLogInfoText\s*=\s*'((?:\\.|[^'\\])*)'",page)
         if not match:
             raise GatewayError('Logs indisponíveis. Verifique a sessão e a permissão de leitura no Huawei.')
         raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m[1], 16)), match[1])
@@ -358,10 +361,16 @@ class Gateway:
                 stamp, level, category, message = event.groups()
                 events.append({'time':stamp, 'level':levels.get(level.lower(), 'OTHER'),
                                'source_level':level, 'category':category, 'message':message})
+            elif source=='ap' and line.strip():
+                ap_event=re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\[([^]]+)\]\s*(.*)$',line)
+                if ap_event:
+                    stamp,level,message=ap_event.groups()
+                    events.append({'time':stamp,'level':levels.get(level.lower(),'OTHER'),'source_level':level,'category':'AP','message':message})
+                elif events: events[-1]['message'] += '\n' + line
             elif events and line.strip():
                 events[-1]['message'] += '\n' + line
         return {'events':list(reversed(events[-1000:])), 'total':len(events),
-                'limited':len(events)>1000, 'source':'Huawei · User Log'}
+                'limited':len(events)>1000, 'source':source, 'raw':raw, 'categories':['Config-Log','Shell-Log','Alarm-Log'] if source=='user' else []}
 
     def reservations(self):
         page = self.reservations_page()
@@ -629,10 +638,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {'options':options, 'event_labels':{k:v[0] for k,v in EVENTS.items()}, 'configured': bool(row), 'enabled': bool(row and row[0]), 'status': entry['status'] if entry else 'Sessão sem monitoramento.'})
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
-        if self.path == '/api/logs':
+        if urllib.parse.urlsplit(self.path).path == '/api/logs':
             try:
                 gw = self.session()
-                with gw.lock: result = gw.logs()
+                source = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get('source',['user'])[0]
+                with gw.lock: result = gw.logs(source)
                 self.send_json(200, result)
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
