@@ -20,6 +20,26 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_block_sends_saved_identifier_as_device_name(self):
+        gw=FakeGateway();mac='aa:bb:cc:dd:ee:ff'
+        gw.devices=lambda:[{'mac':mac,'type':'wifi','port':'SSID1','hostname':'Original'}]
+        policies=iter([{'enabled':True,'blacklist':True,'rules':[]},{'enabled':True,'blacklist':True,'rules':[['domain','SSID-1','Meu celular',mac]]}])
+        gw.block_policy=lambda:next(policies);gw.config_token=lambda:'a'*32
+        with tempfile.TemporaryDirectory(dir=app.ROOT) as directory, patch.object(app,'DATA_DIR',app.Path(directory)):
+            with app.labels() as db:db.execute('INSERT INTO labels VALUES (?,?,?)',(gw.base,mac,'Meu celular'))
+            with patch.object(gw,'request') as request:
+                gw.block_client({'mac':mac,'confirm':'BLOQUEAR'})
+                self.assertEqual(request.call_args.args[1]['x.DeviceName'],'Meu celular')
+
+    def test_name_sync_changes_only_device_name_and_verifies(self):
+        gw=FakeGateway();mac='aa:bb:cc:dd:ee:ff';domain='InternetGatewayDevice.X_HW_Security.WLANMacFilter.1'
+        policies=iter([{'rules':[[domain,'SSID-1','',mac]]},{'rules':[[domain,'SSID-1','Celular',mac]]}])
+        gw.block_policy=lambda:next(policies);gw.config_token=lambda:'a'*32
+        with patch.object(gw,'request') as request:
+            gw.sync_block_device_name(mac,'Celular')
+            self.assertEqual(request.call_args.args[1],{'x.DeviceName':'Celular','x.X_HW_Token':'a'*32})
+
+
     def test_logs_reads_only_and_preserves_levels_and_boot_order(self):
         gw=FakeGateway()
         raw='2026-10-28 10:00:00 [Warning][Alarm-Log] Link down\n1981-01-01 00:00:13 [Error][Alarm-Log] Device reset. Cause: [29999]\n2026-10-28 10:01:00 [Critical][Config-Log] Result:Success\n2026-10-28 10:02:00 [Info][Run-Log] Ready'
@@ -46,8 +66,8 @@ class GatewayTests(unittest.TestCase):
         gw.block_policy=lambda:{'enabled':True,'blacklist':True,'rules':[['InternetGatewayDevice.X_HW_Security.WLANMacFilter.1','SSID-2','Phone','aa:bb:cc:dd:ee:ff']]}
         result=gw.blocked_clients([])
         self.assertEqual((result[0]['mac'],result[0]['status'],result[0]['port']),('aa:bb:cc:dd:ee:ff','blocked','SSID2'))
-        gw.block_policy=lambda:{'enabled':False,'blacklist':True,'rules':[]}
-        self.assertEqual(gw.blocked_clients([]),[])
+        gw.block_policy=lambda:{'enabled':False,'blacklist':True,'rules':[['InternetGatewayDevice.X_HW_Security.WLANMacFilter.1','SSID-2','Phone','AA:BB:CC:DD:EE:FF']]}
+        self.assertFalse(gw.blocked_clients([])[0]['block_active'])
     def test_unblock_removes_only_selected_rule_and_verifies(self):
         gw=FakeGateway(); domain='InternetGatewayDevice.X_HW_Security.WLANMacFilter.1'
         policies=iter([{'rules':[[domain,'SSID-1','Phone','aa:bb:cc:dd:ee:ff']]},{'rules':[]}])

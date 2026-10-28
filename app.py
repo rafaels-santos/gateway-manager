@@ -283,10 +283,13 @@ class Gateway:
             if not policy['enabled'] and body.get('activate') is not True: raise GatewayError('Confirme a ativação do filtro Wi-Fi.')
             path = '/html/bbsp/wlanmacfilter/wlanmacfilter.asp'
             ssid = 'SSID-' + device['port'][4:]
+            with labels() as db:
+                saved = db.execute('SELECT name FROM labels WHERE gateway=? AND mac=?', (self.base, mac)).fetchone()
+            device_name = (saved[0] if saved and saved[0].strip() else device.get('gateway_name') or device.get('hostname') or '')[:80]
             exists = any(len(r)>=4 and r[1]==ssid and r[3].lower()==mac for r in policy['rules'])
             if not exists:
                 url = '/add.cgi?' + urllib.parse.urlencode({'x':'InternetGatewayDevice.X_HW_Security.WLANMacFilter','RequestFile':path.lstrip('/')})
-                self.request(url, {'x.SourceMACAddress':mac,'x.SSIDName':ssid,'x.DeviceName':device.get('hostname','')[:80],'x.Enable':'1','x.X_HW_Token':self.config_token()}, referer=path)
+                self.request(url, {'x.SourceMACAddress':mac,'x.SSIDName':ssid,'x.DeviceName':device_name,'x.Enable':'1','x.X_HW_Token':self.config_token()}, referer=path)
             if not policy['enabled']:
                 url = '/set.cgi?' + urllib.parse.urlencode({'x':'InternetGatewayDevice.X_HW_Security','RequestFile':path.lstrip('/')})
                 self.request(url, {'x.WlanMacFilterRight':'1','x.X_HW_Token':self.config_token()}, referer=path)
@@ -295,7 +298,7 @@ class Gateway:
 
     def blocked_clients(self, devices):
         policy = self.block_policy()
-        if not policy['enabled'] or not policy['blacklist']: return []
+        if not policy['blacklist']: return []
         by_mac = {d['mac']: d for d in devices}
         result = []
         for rule in policy['rules']:
@@ -305,9 +308,24 @@ class Gateway:
             if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac): continue
             port = ssid.replace('SSID-', 'SSID')
             device = dict(by_mac.get(mac, {'mac':mac,'ip':'','hostname':name,'gateway_name':'','duration':'','ip_type':'','ipv6_enabled':''}))
-            device.update({'block_rule':domain,'status':'blocked','type':'wifi','port':port,'network':SSID_MAP.get(port,'Wi-Fi · rede não identificada')})
+            device.update({'block_rule':domain,'block_active':policy['enabled'],'status':'blocked','type':'wifi','port':port,'network':SSID_MAP.get(port,'Wi-Fi · rede não identificada')})
             result.append(device)
         return result
+
+    def sync_block_device_name(self, mac, name):
+        with self.lock:
+            rules = self.block_policy()['rules']
+            targets = [r for r in rules if len(r)>=4 and r[3].lower()==mac and r[2]!=name]
+            path = '/html/bbsp/wlanmacfilter/wlanmacfilter.asp'
+            for rule in targets:
+                if not re.fullmatch(r'InternetGatewayDevice\.X_HW_Security\.WLANMacFilter\.\d+', rule[0]):
+                    raise GatewayError('Regra de bloqueio não reconhecida; nome não enviado.')
+                url = '/set.cgi?' + urllib.parse.urlencode({'x':rule[0], 'RequestFile':path.lstrip('/')})
+                self.request(url, {'x.DeviceName':name, 'x.X_HW_Token':self.config_token()}, referer=path)
+            if targets:
+                updated = {r[0]:r for r in self.block_policy()['rules'] if len(r)>=4}
+                if any(r[0] not in updated or updated[r[0]][2]!=name for r in targets):
+                    raise GatewayError('O Huawei não confirmou o Device Name da regra. Atualize antes de tentar novamente.')
 
     def unblock_client(self, body):
         with self.lock:
@@ -678,8 +696,9 @@ class Handler(BaseHTTPRequestHandler):
                 gw = self.session()
                 mac = str(body.get('mac', '')).lower().strip()
                 name = str(body.get('name', '')).strip()
-                if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac) or len(name) > 80:
+                if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac) or len(name) > 80 or any(ord(c)<32 for c in name):
                     raise GatewayError('Nome ou MAC inválido.')
+                gw.sync_block_device_name(mac, name)
                 with labels() as db:
                     db.execute('INSERT INTO labels (gateway,mac,name) VALUES (?,?,?) ON CONFLICT(gateway,mac) DO UPDATE SET name=excluded.name', (gw.base, mac, name))
                 self.send_json(200, {'ok': True})
