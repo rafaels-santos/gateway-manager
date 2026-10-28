@@ -16,7 +16,9 @@ function deviceIcon(kind) {
 }
 function setPage(page) {
   document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
-  document.querySelectorAll('.nav-item').forEach(el=>{ const active=el.dataset.page===page; el.classList.toggle('active',active); if(active) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); });
+  document.addEventListener('click',event=>{document.querySelectorAll('.filter-menu[open]').forEach(menu=>{if(!menu.contains(event.target)) menu.open=false;});});
+document.addEventListener('keydown',event=>{if(event.key==='Escape') document.querySelectorAll('.filter-menu[open]').forEach(menu=>{menu.open=false;menu.querySelector('summary').focus();});});
+document.querySelectorAll('.nav-item').forEach(el=>{ const active=el.dataset.page===page; el.classList.toggle('active',active); if(active) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); });
   $('#breadcrumb').textContent=({devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP',dns:'DNS',wifi:'Redes Wi-Fi',reboot:'Reinício',logs:'Logs',notifications:'Notificações'})[page];
   if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi(); else if(page==='logs') loadLogs();
 }
@@ -40,12 +42,12 @@ async function refreshDevices() {
       panel.dataset.deviceView=state; panel.hidden=state!==deviceView;
       const heading=node('div'); heading.append(node('h2','',title),node('p','muted',subtitle));
       const tools=node('div','zone-tools'), count=node('span','count'); const menu=node('details','filter-menu'), summary=node('summary','secondary','⚙ Filtrar'); menu.append(summary);
-      const choices=node('div','filter-options');
+      const choices=node('div','filter-options'), filterHeader=node('div','filter-header'); filterHeader.append(node('strong','','Filtros')); choices.append(filterHeader);
       function makeFilter(label, type, options){const wrap=node('label','',label), select=node('select'); select.setAttribute('aria-label',`${label} — ${title}`); for(const [value,text] of options){const opt=node('option','',text); opt.value=value; select.append(opt)} select.value=zoneFilters[zone][type]; select.addEventListener('change',()=>{zoneFilters[zone][type]=select.value;applyFilters()}); wrap.append(select); choices.append(wrap)}
       makeFilter('Rede','network',[['','Todas as redes'],['2.4','2,4 GHz'],['5','5 GHz'],['guest','Convidados']]);
       makeFilter('Categoria','tag',[['','Todas as categorias'],['IoT','IoT'],['Celulares','Celulares'],['Computadores','Computadores'],['Rede','Rede'],['none','Sem categoria']]);
       makeFilter('Identificador','name',[['','Todos os dispositivos'],['named','Com identificador'],['unnamed','Sem identificador']]);
-      const reset=node('button','secondary','Todos'); reset.type='button'; reset.setAttribute('aria-label',`Limpar filtros de ${title}`); reset.addEventListener('click',()=>{zoneFilters[zone]={network:'',tag:'',name:''}; choices.querySelectorAll('select').forEach(s=>s.value=''); applyFilters()}); menu.append(choices); tools.append(count,reset,menu); head.append(heading,tools); panel.append(head);
+      const reset=node('button','secondary','Todos'); reset.type='button'; reset.setAttribute('aria-label',`Limpar filtros de ${title}`); reset.addEventListener('click',()=>{zoneFilters[zone]={network:'',tag:'',name:''}; choices.querySelectorAll('select').forEach(s=>s.value=''); applyFilters()}); filterHeader.append(reset); menu.append(choices); tools.append(count,menu); head.append(heading,tools); panel.append(head);
       const empty=node('p','empty'); panel.append(empty);
       const grid=node('div','device-grid');
       const entries=[];
@@ -57,7 +59,7 @@ async function refreshDevices() {
         if(d.tag) card.insertBefore(node('span','device-tag',d.tag),card.lastChild);
         card.addEventListener('click',()=>openDevice(d)); grid.append(card); entries.push({card,device:d});
       });
-      function applyFilters(){const f=zoneFilters[zone]; let shown=0; for(const {card,device:d} of entries){const network=d.network || ''; const matchNetwork=!f.network || (f.network==='guest' ? network.includes('Convidados') : f.network==='2.4' ? network.includes('2,4 GHz') : network.includes('5 GHz')); const matchTag=!f.tag || (f.tag==='none' ? !d.tag : d.tag===f.tag); const named=Boolean((d.name || '').trim()); const matchName=!f.name || (f.name==='named' ? named : !named); card.hidden=!(matchNetwork && matchTag && matchName); if(!card.hidden)shown++} count.textContent=`${shown} de ${devices.length} ${state}`; empty.hidden=shown>0; empty.textContent=devices.length?'Nenhum dispositivo corresponde aos filtros.':state==='blocked'?'Nenhum bloqueio ativo informado pelo gateway.':state==='offline'?'Nenhum dispositivo offline informado pelo gateway.':'Nenhum dispositivo conectado nesta rede.'; }
+      function applyFilters(){const f=zoneFilters[zone], active=Object.values(f).filter(Boolean).length; summary.classList.toggle('filter-active',active>0); summary.textContent=active ? `⚙ Filtrar · ${active}` : '⚙ Filtrar'; summary.setAttribute('aria-label',`Filtrar ${title}${active ? `: ${active} filtros ativos` : ': sem filtros ativos'}`); reset.disabled=active===0; let shown=0; for(const {card,device:d} of entries){const network=d.network || ''; const matchNetwork=!f.network || (f.network==='guest' ? network.includes('Convidados') : f.network==='2.4' ? network.includes('2,4 GHz') : network.includes('5 GHz')); const matchTag=!f.tag || (f.tag==='none' ? !d.tag : d.tag===f.tag); const named=Boolean((d.name || '').trim()); const matchName=!f.name || (f.name==='named' ? named : !named); card.hidden=!(matchNetwork && matchTag && matchName); if(!card.hidden)shown++} count.textContent=`${shown} de ${devices.length} ${state}`; empty.hidden=shown>0; empty.textContent=devices.length?'Nenhum dispositivo corresponde aos filtros.':state==='blocked'?'Nenhum bloqueio ativo informado pelo gateway.':state==='offline'?'Nenhum dispositivo offline informado pelo gateway.':'Nenhum dispositivo conectado nesta rede.'; }
       applyFilters(); panel.append(grid); target.append(panel);
     }
     $('#blocked-error').hidden=data.blocked_available!==false; $('#blocked-error').textContent=data.blocked_available===false?'Não foi possível consultar os bloqueios do gateway. A lista de bloqueados está indisponível.':'';
