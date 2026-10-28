@@ -49,6 +49,22 @@ class GatewayTests(unittest.TestCase):
         devices = gw.devices()
         self.assertEqual(len(devices), 1)
         self.assertEqual((devices[0]['ip'], devices[0]['mac'], devices[0]['hostname'], devices[0]['gateway_name'], devices[0]['type'], devices[0]['status']), ('192.168.1.7','aa:bb:cc:dd:ee:ff','Laptop-1','Sala','wifi','online'))
+        self.assertEqual((devices[0]['network'], devices[0]['duration'], devices[0]['ip_type']), ('5 GHz', '1:2', 'DHCP'))
+    def test_discord_device_message_contains_direct_link(self):
+        requests = []
+        class Response:
+            status = 200
+            def read(self, size): return b'{}'
+        class Connection:
+            def __init__(self, host, timeout): pass
+            def request(self, method, path, body, headers): requests.append(__import__('json').loads(body))
+            def getresponse(self): return Response()
+            def close(self): pass
+        with patch.object(app.http.client, 'HTTPSConnection', Connection):
+            app.send_discord('https://discord.com/api/webhooks/123456789012345678/' + 'a'*30,
+                             {'mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.1.2'}, 'Sala', 'http://192.168.1.10:8081')
+        self.assertIn('Um novo dispositivo foi conectado ao roteador,\nNome: Sala\nIP: 192.168.1.2\nMAC: aa:bb:cc:dd:ee:ff', requests[0]['content'])
+        self.assertIn('http://192.168.1.10:8081/?device=aa%3Abb%3Acc%3Add%3Aee%3Aff', requests[0]['content'])
     def test_device_list_rejects_session_error(self):
         gw = FakeGateway(); gw.request = lambda path: '<html>login</html>'
         with self.assertRaises(GatewayError): gw.devices()

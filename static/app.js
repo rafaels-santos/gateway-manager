@@ -1,5 +1,5 @@
 const $ = s => document.querySelector(s);
-let reservations = [], deviceTimer = null, loadingDevices = false, webhookEditing = false;
+let reservations = [], deviceTimer = null, loadingDevices = false, webhookEditing = false, currentDevice = null, pendingDevice = new URLSearchParams(location.search).get('device')?.toLowerCase() || '';
 async function api(path, body) {
   const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
   const response = await fetch(path, options);
@@ -34,32 +34,36 @@ async function refreshDevices() {
       const panel=node('div','panel device-panel'); const head=node('div','panel-header');
       const heading=node('div'); heading.append(node('h2','',title),node('p','muted',subtitle)); head.append(heading,node('span','count',`${devices.length} online`)); panel.append(head);
       if(!devices.length) panel.append(node('p','empty','Nenhum dispositivo conectado nesta rede.'));
+      const grid=node('div','device-grid');
       devices.forEach(d=>{
-        const row=node('div','device-row'); const identity=node('div','device-identity'); const icon=node('span','device-icon'); icon.append(deviceIcon(d.type));
-        const info=node('div'); info.append(node('strong','',d.gateway_name || d.hostname || 'Dispositivo sem nome'),node('small','muted',`${d.port || '—'} · Online`)); identity.append(icon,info);
-        const network=node('div','network'); network.append(node('span','',d.ip || 'Sem IP'),node('small','muted',d.mac));
-        const form=node('form','name-form');
-        const display=node('div','name-display');
-        const caption=node('span','identifier-label','Identificador');
-        const current=node('strong','identifier-value',d.name || 'Não definido');
-        display.append(caption,current);
-        const edit=node('button','identifier-edit',d.name ? 'Editar' : '+ Adicionar'); edit.type='button'; edit.setAttribute('aria-label',`Editar identificador de ${d.hostname || d.mac}`);
-        const input=node('input','device-name-input'); input.value=d.name; input.placeholder='Nome do identificador'; input.maxLength=80; input.setAttribute('aria-label',`Identificador de ${d.hostname || d.mac}`); input.hidden=true;
-        const save=node('button','secondary','Salvar'); save.type='submit'; save.hidden=true;
-        const cancel=node('button','identifier-edit','Cancelar'); cancel.type='button'; cancel.hidden=true;
-        function leaveEdit() { form.classList.remove('is-editing'); display.hidden=false; edit.hidden=false; input.hidden=true; save.hidden=true; cancel.hidden=true; }
-        edit.addEventListener('click',()=>{ form.classList.add('is-editing'); display.hidden=true; edit.hidden=true; input.hidden=false; save.hidden=false; cancel.hidden=false; input.value=d.name; input.focus(); });
-        cancel.addEventListener('click',()=>{leaveEdit();refreshDevices()});
-        input.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();leaveEdit();refreshDevices()}});
-        form.append(display,edit,input,save,cancel);
-        form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;try{await api('/api/name',{mac:d.mac,name:input.value});d.name=input.value.trim();leaveEdit();message('Identificador salvo para todas as abas.');await refreshDevices();}catch(err){message(err.message,true)}finally{save.disabled=false}});
-        row.append(identity,network,form); panel.append(row);
-      }); target.append(panel);
+        const card=node('button','device-card'); card.type='button';
+        const top=node('div','device-card-top'), icon=node('span','device-icon'); icon.append(deviceIcon(d.type));
+        top.append(icon,node('span','online-pill','● Online')); const title=node('strong','device-card-name',d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome');
+        card.append(top,title,node('span','device-card-network',d.network || d.port || 'Rede não identificada'),node('span','device-card-ip',d.ip || 'Sem IP'),node('span','device-card-mac',d.mac),node('span','device-card-open','Ver detalhes →'));
+        card.addEventListener('click',()=>openDevice(d)); grid.append(card);
+      }); panel.append(grid); target.append(panel);
     }
+    if(pendingDevice){ const linked=data.devices.find(d=>d.mac===pendingDevice); pendingDevice=''; if(linked) openDevice(linked); else message('Dispositivo não encontrado na lista atual do gateway.',true); }
     $('#devices-error').hidden=true; $('#last-update').textContent=`Atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;
   } catch(err) { $('#devices-error').textContent=err.message; $('#devices-error').hidden=false; }
   finally { loadingDevices=false; }
 }
+function detailItem(label,value){ const item=node('div','detail-item'); item.append(node('span','muted',label),node('strong','',value || 'Não informado')); return item; }
+function formatDuration(value){ const match=/^(\d+):(\d+)$/.exec(value || ''); return match ? `${match[1]} h ${match[2]} min` : value || 'Não informado'; }
+async function openDevice(device){
+  currentDevice=device; $('#detail-title').textContent=device.name || device.gateway_name || device.hostname || 'Dispositivo sem nome';
+  $('#detail-subtitle').textContent=`${device.network || device.port || 'Rede não identificada'} · ${device.status === 'online' ? 'Online' : 'Offline'}`;
+  const info=$('#detail-info'); info.replaceChildren();
+  for(const [label,value] of [['Nome no gateway',device.gateway_name || device.hostname],['IP atual',device.ip],['Endereço MAC',device.mac],['Rede',device.network],['Porta',device.port],['Tempo conectado',formatDuration(device.duration)],['Tipo de IP',device.ip_type],['IPv6',device.ipv6_enabled === '1' ? 'Ativo' : device.ipv6_enabled === '0' ? 'Não informado pelo cliente' : 'Não informado']]) info.append(detailItem(label,value));
+  $('#detail-name').value=device.name || ''; $('#detail-ip').value=device.ip || ''; $('#detail-ip-submit').disabled=true; $('#detail-ip-status').textContent='Consultando reservas...';
+  if(!$('#device-dialog').open) $('#device-dialog').showModal();
+  try { const data=await api('/api/reservations'); if(currentDevice !== device) return; const existing=data.reservations.find(r=>r.mac.toLowerCase()===device.mac); device.reservationId=existing?.id || ''; if(existing) $('#detail-ip').value=existing.ip; $('#detail-ip-submit').textContent=existing?'Atualizar reserva':'Fixar IP'; $('#detail-ip-status').textContent=existing?'Este dispositivo já possui uma reserva de IP.':'A reserva pode entrar em vigor após a renovação DHCP.'; $('#detail-ip-submit').disabled=false; }
+  catch(e){if(currentDevice===device) $('#detail-ip-status').textContent='Não foi possível consultar reservas: '+e.message;}
+}
+$('#detail-close').addEventListener('click',()=>$('#device-dialog').close());
+$('#device-dialog').addEventListener('close',()=>{currentDevice=null; const url=new URL(location.href); url.searchParams.delete('device'); history.replaceState(null,'',url);});
+$('#detail-name-form').addEventListener('submit',async e=>{e.preventDefault(); const d=currentDevice, button=e.submitter; button.disabled=true; try{await api('/api/name',{mac:d.mac,name:$('#detail-name').value}); d.name=$('#detail-name').value.trim(); $('#detail-title').textContent=d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome'; message('Identificador salvo.'); await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}});
+$('#detail-ip-form').addEventListener('submit',async e=>{e.preventDefault(); const d=currentDevice, button=e.submitter; button.disabled=true; try{await api('/api/reservation',{id:d.reservationId || '',mac:d.mac,ip:$('#detail-ip').value.trim()}); message('Reserva de IP confirmada pelo gateway.'); $('#detail-ip-status').textContent='Reserva confirmada pelo gateway.'; const data=await api('/api/reservations'); d.reservationId=data.reservations.find(r=>r.mac.toLowerCase()===d.mac)?.id || ''; button.textContent='Atualizar reserva';}catch(err){message(err.message,true)}finally{button.disabled=false}});
 function resetForm(){ $('#reservation').reset();$('#reservation-id').value='';$('#form-title').textContent='Nova reserva'; }
 async function refreshReservations(){
   const data=await api('/api/reservations');reservations=data.reservations;const list=$('#list');list.replaceChildren();

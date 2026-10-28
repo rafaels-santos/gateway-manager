@@ -24,6 +24,8 @@ MONITOR_LOCKS = {}
 PATH = '/html/bbsp/dhcpstatic/dhcpstatic.asp'
 DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress'
 DATA_DIR = Path(os.environ.get('DATA_DIR', str(ROOT / 'data')))
+# Observed on this gateway; override if the SSID assignments change.
+SSID_MAP = {'SSID1': '2,4 GHz', 'SSID2': '2,4 GHz · Convidados', 'SSID5': '5 GHz'}
 
 @contextmanager
 def labels():
@@ -32,6 +34,7 @@ def labels():
     db.execute('CREATE TABLE IF NOT EXISTS labels (gateway TEXT, mac TEXT, name TEXT, PRIMARY KEY (gateway, mac))')
     db.execute('CREATE TABLE IF NOT EXISTS webhook_config (gateway TEXT PRIMARY KEY, url TEXT NOT NULL, enabled INTEGER NOT NULL, baseline INTEGER NOT NULL DEFAULT 0)')
     db.execute('CREATE TABLE IF NOT EXISTS seen_devices (gateway TEXT NOT NULL, mac TEXT NOT NULL, PRIMARY KEY (gateway, mac))')
+    db.execute('CREATE TABLE IF NOT EXISTS app_origins (gateway TEXT PRIMARY KEY, origin TEXT NOT NULL)')
     try:
         if os.name != 'nt': os.chmod(DATA_DIR / 'labels.db', 0o600)
         with db:
@@ -132,7 +135,7 @@ class Gateway:
                 raise GatewayError('O formato de dispositivos do gateway não foi reconhecido.')
             if len(fields) < 14:
                 raise GatewayError('O gateway retornou uma lista de dispositivos incompleta.')
-            domain, ip, mac, port, _, _, status, kind, _, hostname = fields[:10]
+            domain, ip, mac, port, ip_type, _, status, kind, duration, hostname = fields[:10]
             mac = mac.lower()
             if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
                 continue
@@ -140,7 +143,10 @@ class Gateway:
                 continue
             device = {'id': domain, 'ip': ip, 'mac': mac, 'port': port,
                              'status': status.lower(), 'type': 'wifi' if kind.upper() == 'WIFI' else 'lan',
-                             'hostname': hostname, 'gateway_name': fields[13]}
+                             'hostname': hostname, 'gateway_name': fields[13],
+                             'duration': duration, 'ip_type': ip_type,
+                             'ipv4_enabled': fields[10], 'ipv6_enabled': fields[11],
+                             'network': SSID_MAP.get(port.upper(), 'Wi-Fi · rede não identificada') if kind.upper() == 'WIFI' else 'LAN'}
             previous = found.get(mac)
             if not previous or (device['status'] == 'online' and previous['status'] != 'online'):
                 found[mac] = device
@@ -211,7 +217,7 @@ def validate_webhook(url):
     return url
 
 
-def send_discord(url, device=None, name=''):
+def send_discord(url, device=None, name='', app_origin=''):
     import http.client
     parsed = urllib.parse.urlsplit(validate_webhook(url))
     if device is None:
@@ -219,8 +225,10 @@ def send_discord(url, device=None, name=''):
     else:
         title = (name or device.get('gateway_name') or device.get('hostname') or 'Dispositivo sem nome')[:80]
         address = (device.get('ip') or 'Não informado')[:45]
-        port = (device.get('port') or 'Não informada')[:40]
-        content = 'Novo dispositivo conectado\nNome: %s\nIP: %s\nMAC: %s\nConexão: %s' % (title, address, device['mac'], port)
+        title = title.replace('\n', ' ').replace('\r', ' ')
+        content = 'Um novo dispositivo foi conectado ao roteador,\nNome: %s\nIP: %s\nMAC: %s' % (title, address, device['mac'])
+        if app_origin:
+            content += '\nAbrir dispositivo: %s/?device=%s' % (app_origin.rstrip('/'), urllib.parse.quote(device['mac'], safe=''))
     payload = json.dumps({'content': content, 'allowed_mentions': {'parse': []}}, ensure_ascii=False).encode('utf-8')
     conn = http.client.HTTPSConnection(parsed.hostname, timeout=10)
     try:
@@ -248,9 +256,10 @@ def monitor_once(gw):
             db.execute('UPDATE webhook_config SET baseline=1 WHERE gateway=?', (gw.base,))
             return 'Monitorando; dispositivos atuais registrados como referência.'
         names = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gw.base,)))
+        origin_row = db.execute('SELECT origin FROM app_origins WHERE gateway=?', (gw.base,)).fetchone()
     pending = {d['mac']: d for d in devices if d['mac'] not in seen}
     for mac, device in pending.items():
-        send_discord(config[0], device, names.get(mac, ''))
+        send_discord(config[0], device, names.get(mac, ''), origin_row[0] if origin_row else '')
         with labels() as db:
             db.execute('INSERT OR IGNORE INTO seen_devices (gateway,mac) VALUES (?,?)', (gw.base, mac))
     return 'Monitorando dispositivos a cada 30 segundos.'
@@ -371,6 +380,11 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if self.path == '/api/login':
                 gw = Gateway(body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
+                parsed_origin = urllib.parse.urlsplit(origin)
+                if parsed_origin.scheme not in ('http', 'https') or not parsed_origin.hostname or parsed_origin.username or parsed_origin.password or parsed_origin.path or parsed_origin.query or parsed_origin.fragment:
+                    raise GatewayError('Endereço do aplicativo inválido.')
+                with labels() as db:
+                    db.execute('INSERT INTO app_origins (gateway,origin) VALUES (?,?) ON CONFLICT(gateway) DO UPDATE SET origin=excluded.origin', (gw.base, origin))
                 key = secrets.token_urlsafe(32)
                 with LOCK: SESSIONS[key] = gw
                 start_monitor(gw)
