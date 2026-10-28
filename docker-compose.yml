@@ -19,4 +19,4 @@ x-casaos:
   scheme: http
   index: /
   port_map: "8080"
-  icon: https://raw.githubusercontent.com/rafaels-santos/gateway-manager/master/static/icon.png
+  icon: https://raw.githubusercontent.com/rafaels-santos/gateway-manager/60bdd37/static/icon.png
