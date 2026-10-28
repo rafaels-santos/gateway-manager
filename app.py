@@ -320,6 +320,29 @@ class Gateway:
             self.request('/del.cgi?'+urllib.parse.urlencode({'RequestFile':path.lstrip('/')}), {domain:'','x.X_HW_Token':self.config_token()}, referer=path)
             if any(r[0]==domain for r in self.block_policy()['rules']): raise GatewayError('A remoção não foi confirmada pelo Huawei; confira no painel antes de tentar novamente.')
 
+    def logs(self):
+        # Read the same page as Maintenance > User Log; never change logging settings.
+        page = self.request('/html/ssmp/userlog/logview.asp')
+        match = re.search(r"document\.getElementById\([\"']logarea[\"']\)\.value\s*=\s*'((?:\\.|[^'\\])*)'", page)
+        if not match:
+            raise GatewayError('Logs indisponíveis. Verifique a sessão e a permissão de leitura no Huawei.')
+        raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m[1], 16)), match[1])
+        raw = raw.replace(r'\r', '\r').replace(r'\n', '\n').replace(r"\'", "'").replace(r'\\', '\\')
+        events = []
+        levels = {'info':'INFO', 'informational':'INFO', 'notice':'INFO', 'debug':'INFO',
+                  'warning':'WAR', 'warn':'WAR', 'error':'ERROR', 'critical':'ERROR',
+                  'alert':'ERROR', 'emergency':'ERROR'}
+        for line in raw.splitlines():
+            event = re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\[([^]]+)\]\[([^]]+)\]\s*(.*)$', line)
+            if event:
+                stamp, level, category, message = event.groups()
+                events.append({'time':stamp, 'level':levels.get(level.lower(), 'OTHER'),
+                               'source_level':level, 'category':category, 'message':message})
+            elif events and line.strip():
+                events[-1]['message'] += '\n' + line
+        return {'events':list(reversed(events[-1000:])), 'total':len(events),
+                'limited':len(events)>1000, 'source':'Huawei · User Log'}
+
     def reservations(self):
         page = self.reservations_page()
         # Firmware serializes reservations as constructors in JavaScript.
@@ -518,6 +541,13 @@ class Handler(BaseHTTPRequestHandler):
                     row = db.execute('SELECT enabled FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
                 with LOCK: entry = MONITORS.get(gw.base)
                 self.send_json(200, {'configured': bool(row), 'enabled': bool(row and row[0]), 'status': entry['status'] if entry else 'Sessão sem monitoramento.'})
+            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            return
+        if self.path == '/api/logs':
+            try:
+                gw = self.session()
+                with gw.lock: result = gw.logs()
+                self.send_json(200, result)
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
         if self.path in ('/api/dhcp', '/api/wifi'):

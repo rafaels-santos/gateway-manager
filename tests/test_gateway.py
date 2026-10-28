@@ -20,6 +20,27 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_logs_reads_only_and_preserves_levels_and_boot_order(self):
+        gw=FakeGateway()
+        raw='2026-10-28 10:00:00 [Warning][Alarm-Log] Link down\n1981-01-01 00:00:13 [Error][Alarm-Log] Device reset. Cause: [29999]\n2026-10-28 10:01:00 [Critical][Config-Log] Result:Success\n2026-10-28 10:02:00 [Info][Run-Log] Ready'
+        encoded=''.join('\\x%02x'%ord(c) for c in raw)
+        gw.page="<script>document.getElementById(\"logarea\").value='"+encoded+"';</script>"
+        result=gw.logs()
+        self.assertEqual(result['total'],4)
+        self.assertEqual([e['level'] for e in result['events']],['INFO','ERROR','ERROR','WAR'])
+        self.assertEqual(result['events'][1]['source_level'],'Critical')
+        self.assertIn('Device reset',result['events'][2]['message'])
+        self.assertEqual(gw.writes,[])
+
+    def test_logs_rejects_login_page_and_bounds_events(self):
+        gw=FakeGateway();gw.page='<html>Login</html>'
+        with self.assertRaises(GatewayError):gw.logs()
+        gw.page="document.getElementById('logarea').value='"+r'\x0a'.join('2026-10-28 10:00:00 [Notice][Run-Log] Event %s'%i for i in range(1002))+"';"
+        result=gw.logs()
+        self.assertTrue(result['limited'])
+        self.assertEqual(len(result['events']),1000)
+        self.assertEqual(result['events'][0]['message'],'Event 1001')
+
     def test_blocked_clients_includes_clients_missing_from_device_list(self):
         gw=FakeGateway()
         gw.block_policy=lambda:{'enabled':True,'blacklist':True,'rules':[['InternetGatewayDevice.X_HW_Security.WLANMacFilter.1','SSID-2','Phone','aa:bb:cc:dd:ee:ff']]}

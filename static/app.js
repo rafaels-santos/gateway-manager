@@ -17,8 +17,8 @@ function deviceIcon(kind) {
 function setPage(page) {
   document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
   document.querySelectorAll('.nav-item').forEach(el=>{ const active=el.dataset.page===page; el.classList.toggle('active',active); if(active) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); });
-  $('#breadcrumb').textContent=({devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP',dns:'DNS',wifi:'Redes Wi-Fi',reboot:'Reinício',notifications:'Notificações'})[page];
-  if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi();
+  $('#breadcrumb').textContent=({devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP',dns:'DNS',wifi:'Redes Wi-Fi',reboot:'Reinício',logs:'Logs',notifications:'Notificações'})[page];
+  if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi(); else if(page==='logs') loadLogs();
 }
 document.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page)));
 function selectDeviceView(view){ deviceView=view; for(const state of ['online','offline','blocked']){ const active=state===view; $(`#show-${state}`).classList.toggle('active',active); $(`#show-${state}`).setAttribute('aria-pressed',String(active)); } document.querySelectorAll('[data-device-view]').forEach(panel=>panel.hidden=panel.dataset.deviceView!==view); }
@@ -147,3 +147,23 @@ $('#reboot-cancel').addEventListener('click',()=>$('#reboot-dialog').close());
 $('#reboot-form').addEventListener('submit',async e=>{e.preventDefault(); if($('#reboot-confirm').value!=='REINICIAR'){message('Digite REINICIAR para confirmar.',true);return} const button=e.submitter; button.disabled=true; try{await api('/api/reboot',{confirm:'REINICIAR'}); $('#reboot-dialog').close(); $('#reboot-status').textContent='Comando enviado. Aguarde a retomada da rede e conecte-se novamente.'; message('Comando de reinício enviado.');}catch(err){message(err.message,true)}finally{button.disabled=false}});
 
 $('#block-client').addEventListener('click',async e=>{const d=currentDevice;if(!d||d.type!=='wifi')return;if(d.block_rule){if(!confirm(`Desbloquear ${d.name||d.hostname||d.mac.toUpperCase()} na rede ${d.port}?`))return;const button=e.currentTarget;button.disabled=true;try{await api('/api/unblock',{mac:d.mac,rule:d.block_rule,confirm:'DESBLOQUEAR'});$('#device-dialog').close();message('Regra de bloqueio removida e confirmada pelo Huawei.');await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}return}if(!confirm(`Bloquear ${d.name||d.hostname||d.mac.toUpperCase()} na rede ${d.port}? O dispositivo perderá acesso. Se o filtro estiver desativado e sem regras, ele será ativado. Para desfazer, use a aba Bloqueados.`))return;const button=e.currentTarget;button.disabled=true;try{await api('/api/block',{mac:d.mac,confirm:'BLOQUEAR',activate:true});message('Regra de bloqueio confirmada pelo Huawei.');$('#device-dialog').close();await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}});
+
+let logEvents=[];
+function renderLogs(){
+  const level=$('#log-level').value, list=$('#log-events'); list.replaceChildren();
+  const events=logEvents.filter(e=>!level||e.level===level);
+  if(!events.length) list.append(node('p','muted','Nenhum evento para este filtro.'));
+  for(const event of events){
+    const row=node('article','log-event'), badge=node('span',`log-badge log-${event.level.toLowerCase()}`,event.level);
+    const body=node('div','log-body'), meta=node('div','log-meta',`${event.time} · ${event.category} · Nível Huawei: ${event.source_level}`);
+    body.append(meta,node('p','log-text',event.message)); row.append(badge,body); list.append(row);
+  }
+}
+async function loadLogs(){
+  const button=$('#refresh-logs'), status=$('#log-status'); button.disabled=true; status.textContent='Consultando Huawei…';
+  try{const result=await api('/api/logs');logEvents=result.events;renderLogs();status.textContent=`${result.total} eventos${result.limited?' · exibindo os últimos 1.000':''} · Atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;}
+  catch(e){logEvents=[];$('#log-events').replaceChildren();status.textContent=e.message;}
+  finally{button.disabled=false;}
+}
+$('#refresh-logs').addEventListener('click',loadLogs);
+$('#log-level').addEventListener('change',renderLogs);
