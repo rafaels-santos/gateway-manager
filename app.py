@@ -412,7 +412,7 @@ def enrich_reservations(rows, devices, names):
 def mark_fixed_addresses(devices, reservations):
     reserved = {(row['mac'].lower(), row['ip']) for row in reservations if row.get('enabled', True)}
     for device in devices:
-        device['ip_fixed'] = (device['mac'].lower(), device['ip']) in reserved or device.get('ip_type', '').lower() == 'static'
+        device['ip_fixed'] = (device['mac'].lower(), device['ip']) in reserved
     return devices
 
 class Handler(BaseHTTPRequestHandler):
@@ -464,7 +464,7 @@ class Handler(BaseHTTPRequestHandler):
                         mark_fixed_addresses(rows, reservations)
                         reservations_available = True
                     except GatewayError:
-                        for row in rows: row['ip_fixed'] = row.get('ip_type', '').lower() == 'static'
+                        for row in rows: row['ip_fixed'] = False
                         reservations_available = False
                 with labels() as db:
                     saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))

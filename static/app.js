@@ -7,7 +7,7 @@ async function api(path, body) {
   if (!response.ok) throw new Error(result.error || 'Erro de comunicação.');
   return result;
 }
-function message(text, error=false) { $('#message').textContent=text; $('#message').className=error?'toast error':'toast'; }
+function message(text, error=false) { const box=$('#message'); box.replaceChildren(); box.className=error?'toast error':'toast'; if(!text)return; const label=document.createElement('span'); label.textContent=text; const close=document.createElement('button'); close.type='button'; close.className='toast-close'; close.setAttribute('aria-label','Fechar notificação'); close.textContent='×'; close.addEventListener('click',()=>box.replaceChildren()); box.append(label,close); }
 function node(tag, cls, text) { const el=document.createElement(tag); if(cls) el.className=cls; if(text!==undefined) el.textContent=text; return el; }
 function deviceIcon(kind) {
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true');
@@ -38,7 +38,7 @@ async function refreshDevices() {
       devices.forEach(d=>{
         const card=node('button','device-card'); card.type='button';
         const top=node('div','device-card-top'), icon=node('span','device-icon'); icon.append(deviceIcon(d.type));
-        top.append(icon,node('span','online-pill','● Online')); const title=node('strong','device-card-name',d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome');
+        top.append(icon,node('span','online-pill','● Online')); const title=node('strong',`device-card-name${d.name ? ' ip-fixed' : ''}`,d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome');
         card.append(top,title,node('span','device-card-network',d.network || d.port || 'Rede não identificada'),node('span',`device-card-ip${d.ip_fixed ? ' ip-fixed' : ''}`,`${d.ip || 'Sem IP'}${d.ip_fixed ? ' · Fixo' : ''}`),node('span','device-card-mac',d.mac),node('span','device-card-open','Ver detalhes →'));
         card.addEventListener('click',()=>openDevice(d)); grid.append(card);
       }); panel.append(grid); target.append(panel);
@@ -51,7 +51,7 @@ async function refreshDevices() {
 function detailItem(label,value){ const item=node('div','detail-item'); item.append(node('span','muted',label),node('strong','',value || 'Não informado')); return item; }
 function formatDuration(value){ const match=/^(\d+):(\d+)$/.exec(value || ''); return match ? `${match[1]} h ${match[2]} min` : value || 'Não informado'; }
 async function openDevice(device){
-  currentDevice=device; $('#detail-title').textContent=device.name || device.gateway_name || device.hostname || 'Dispositivo sem nome';
+  currentDevice=device; $('#detail-title').textContent=device.name || device.gateway_name || device.hostname || 'Dispositivo sem nome'; $('#detail-title').classList.toggle('ip-fixed',Boolean(device.name));
   $('#detail-subtitle').textContent=`${device.network || device.port || 'Rede não identificada'} · ${device.status === 'online' ? 'Online' : 'Offline'}`;
   const info=$('#detail-info'); info.replaceChildren();
   for(const [label,value] of [['Nome no gateway',device.gateway_name || device.hostname],['IP atual',device.ip],['Endereço MAC',device.mac],['Rede',device.network],['Porta',device.port],['Tempo conectado',formatDuration(device.duration)],['Tipo de IP',device.ip_type],['IPv6',device.ipv6_enabled === '1' ? 'Ativo' : device.ipv6_enabled === '0' ? 'Não informado pelo cliente' : 'Não informado']]) { const item=detailItem(label,value); if(label==='IP atual' && device.ip_fixed) item.querySelector('strong').classList.add('ip-fixed'); info.append(item); }
@@ -62,14 +62,14 @@ async function openDevice(device){
 }
 $('#detail-close').addEventListener('click',()=>$('#device-dialog').close());
 $('#device-dialog').addEventListener('close',()=>{currentDevice=null; const url=new URL(location.href); url.searchParams.delete('device'); history.replaceState(null,'',url);});
-$('#detail-name-form').addEventListener('submit',async e=>{e.preventDefault(); const d=currentDevice, button=e.submitter; button.disabled=true; try{await api('/api/name',{mac:d.mac,name:$('#detail-name').value}); d.name=$('#detail-name').value.trim(); $('#detail-title').textContent=d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome'; message('Identificador salvo.'); await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}});
+$('#detail-name-form').addEventListener('submit',async e=>{e.preventDefault(); const d=currentDevice, button=e.submitter; button.disabled=true; try{await api('/api/name',{mac:d.mac,name:$('#detail-name').value}); d.name=$('#detail-name').value.trim(); $('#detail-title').textContent=d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome'; $('#detail-title').classList.toggle('ip-fixed',Boolean(d.name)); message('Identificador salvo.'); await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}});
 $('#detail-ip-form').addEventListener('submit',async e=>{e.preventDefault(); const d=currentDevice, button=e.submitter; button.disabled=true; try{await api('/api/reservation',{id:d.reservationId || '',mac:d.mac,ip:$('#detail-ip').value.trim()}); message('Reserva de IP confirmada pelo gateway.'); $('#detail-ip-status').textContent='Reserva confirmada pelo gateway.'; const data=await api('/api/reservations'); d.reservationId=data.reservations.find(r=>r.mac.toLowerCase()===d.mac)?.id || ''; button.textContent='Atualizar reserva';}catch(err){message(err.message,true)}finally{button.disabled=false}});
 function resetForm(){ $('#reservation').reset();$('#reservation-id').value='';$('#form-title').textContent='Nova reserva'; }
 async function refreshReservations(){
   const data=await api('/api/reservations');reservations=data.reservations;const list=$('#list');list.replaceChildren();
   if(data.device_names_unavailable) list.append(node('p','notice','Não foi possível carregar os nomes do gateway; os identificadores locais continuam disponíveis.'));
   if(!reservations.length){list.append(node('p','empty','Nenhuma reserva encontrada.'));return;}
-  reservations.forEach(row=>{const card=node('div','reservation-row');const info=node('div');const network=node('small','muted');network.append(document.createTextNode(`${row.mac} · `),node('span',row.enabled===false?'':'ip-fixed',`${row.ip} · ${row.enabled===false?'Reserva desativada':'Reservado'}`));info.append(node('strong','',row.name||'Identificador não definido'),network,node('small','muted',`Nome do dispositivo: ${row.gateway_name||row.hostname||'Não informado'}`));const edit=node('button','secondary','Editar');edit.type='button';edit.addEventListener('click',()=>{$('#reservation-id').value=row.id;$('#mac').value=row.mac;$('#ip').value=row.ip;$('#name').value=row.name;$('#form-title').textContent='Editar reserva';$('#mac').focus()});card.append(info,edit);list.append(card)});
+  reservations.forEach(row=>{const card=node('div','reservation-row');const info=node('div');const network=node('small','muted');network.append(document.createTextNode(`${row.mac} · `),node('span',row.enabled===false?'':'ip-fixed',`${row.ip} · ${row.enabled===false?'Reserva desativada':'Reservado'}`));info.append(node('strong',row.name?'ip-fixed':'',row.name||'Identificador não definido'),network,node('small','muted',`Nome do dispositivo: ${row.gateway_name||row.hostname||'Não informado'}`));const edit=node('button','secondary','Editar');edit.type='button';edit.addEventListener('click',()=>{$('#reservation-id').value=row.id;$('#mac').value=row.mac;$('#ip').value=row.ip;$('#name').value=row.name;$('#form-title').textContent='Editar reserva';$('#mac').focus()});card.append(info,edit);list.append(card)});
 }
 async function showDashboard(){ $('#login-screen').hidden=true; $('#dashboard').hidden=false; await refreshDevices(); clearInterval(deviceTimer); deviceTimer=setInterval(()=>{if(!document.hidden)refreshDevices()},15000); }
 $('#connect').addEventListener('submit',async e=>{e.preventDefault();message('Conectando...');try{await api('/api/login',{address:$('#address').value,username:$('#username').value,password:$('#password').value});$('#password').value='';message('Conectado.');await showDashboard()}catch(err){$('#password').value='';message(err.message,true)}});

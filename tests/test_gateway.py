@@ -23,9 +23,13 @@ class GatewayTests(unittest.TestCase):
     def test_fixed_ip_requires_matching_mac_and_ip(self):
         devices = [{'mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.1.10','ip_type':'DHCP'}, {'mac':'aa:bb:cc:dd:ee:01','ip':'192.168.1.11','ip_type':'Static'}]
         app.mark_fixed_addresses(devices, [{'mac':'AA:BB:CC:DD:EE:FF','ip':'192.168.1.20'}])
-        self.assertEqual([d['ip_fixed'] for d in devices], [False, True])
+        self.assertEqual([d['ip_fixed'] for d in devices], [False, False])
         app.mark_fixed_addresses(devices, [{'mac':'AA:BB:CC:DD:EE:FF','ip':'192.168.1.10'}])
         self.assertTrue(devices[0]['ip_fixed'])
+        app.mark_fixed_addresses(devices, [])
+        self.assertFalse(devices[0]['ip_fixed'])
+        app.mark_fixed_addresses(devices, [{'mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.1.10','enabled':False}])
+        self.assertFalse(devices[0]['ip_fixed'])
     def test_dhcp_parser_preserves_dns_and_network(self):
         gw = FakeGateway()
         gw.request = lambda path: '''var MainDhcpRange = new Array(new dhcpmainst("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement","1","192.168.1.2","192.168.1.200","86400","1","","","","","","","","","","","1.1.1.1,8.8.8.8","1","","0",""),null); var LanIpInfos = new Array(new stipaddr("domain","1","192.168.1.1","255.255.255.0"),null); onttoken'''
