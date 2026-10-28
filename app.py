@@ -1,6 +1,5 @@
 import base64
 import http.cookiejar
-import http.client
 import ipaddress
 import json
 import re
@@ -78,42 +77,52 @@ class Gateway:
             raise GatewayError('Não foi possível acessar o gateway: %s' % e)
 
     def login(self, user, password):
-        # This Huawei firmware ties the one-time token to the TCP connection.
-        # Keep the token and login requests on one connection.
         with self.lock:
             page = self.request('/')
             if 'EG8145X6' not in page:
                 raise GatewayError('O gateway não foi identificado como Huawei EG8145X6.')
-            parsed = urllib.parse.urlsplit(self.base)
-            conn_class = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
-            conn = conn_class(parsed.hostname, parsed.port, timeout=12)
-            headers = {'User-Agent': 'Mozilla/5.0', 'Referer': self.base + '/', 'Origin': self.base, 'Content-Type': 'application/x-www-form-urlencoded'}
-            try:
-                conn.request('POST', '/asp/GetRandCount.asp', body=b'', headers={**headers, 'X-Requested-With': 'XMLHttpRequest'})
-                response = conn.getresponse()
-                token = response.read(1024).decode('utf-8-sig', errors='replace').strip()
-                if response.status != 200 or not re.fullmatch(r'[0-9a-fA-F]{64}', token):
-                    raise GatewayError('O gateway não retornou um token de login válido.')
-                payload = urllib.parse.urlencode({'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token}).encode()
-                login_headers = {**headers, 'Cookie': 'Cookie=body:Language:english:id=-1'}
-                conn.request('POST', '/login.cgi', body=payload, headers=login_headers)
-                response = conn.getresponse()
-                response.read(2_000_000)
-                from http.cookies import SimpleCookie
-                cookies = SimpleCookie()
-                for header in response.headers.get_all('Set-Cookie', []):
-                    cookies.load(header)
-                if response.status not in (200, 302, 303) or 'Cookie' not in cookies or not cookies['Cookie'].value.startswith('sid='):
-                    raise GatewayError('Login não confirmado pelo gateway. Verifique o usuário e a senha ou se a conta está bloqueada.')
-                cookie = http.cookiejar.Cookie(version=0, name='Cookie', value=cookies['Cookie'].value, port=None, port_specified=False, domain=parsed.hostname, domain_specified=False, domain_initial_dot=False, path='/', path_specified=True, secure=parsed.scheme == 'https', expires=None, discard=True, comment=None, comment_url=None, rest={}, rfc2109=False)
-                self.cookies.set_cookie(cookie)
-            except (OSError, http.client.HTTPException, UnicodeError) as e:
-                raise GatewayError('Falha na comunicação de login com o gateway: %s' % e)
-            finally:
-                conn.close()
+            # The gateway login page creates this language cookie before submitting.
+            cookie = http.cookiejar.Cookie(version=0, name='Cookie', value='body:Language:english:id=-1', port=None, port_specified=False, domain=urllib.parse.urlsplit(self.base).hostname, domain_specified=False, domain_initial_dot=False, path='/', path_specified=True, secure=False, expires=None, discard=True, comment=None, comment_url=None, rest={}, rfc2109=False)
+            self.cookies.set_cookie(cookie)
+            token = self.request('/asp/GetRandCount.asp', {}, xhr=True).strip()
+            if not token or len(token) > 256:
+                raise GatewayError('O gateway não retornou um token de login válido.')
+            result = self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
+            # Emit structural markers only: never print response text, tokens or credentials.
+            markers = ('document.cookie', 'location', 'window.name', 'Set-Cookie', 'login', 'error', 'fail', 'script', 'iframe', 'refresh', 'redirect', 'waiting', 'pagename', 'index.asp', 'login.asp')
+            destinations = re.findall(r"(?:pageName|location(?:\.href)?)\s*=\s*['\"](/(?:index\.asp|login\.asp)?)['\"]", result, re.I)
+            print('Diagnóstico da resposta: tamanho=%d; marcadores=%s; destino=%s' % (len(result), ','.join(m for m in markers if m.lower() in result.lower()) or 'nenhum', ','.join(destinations) or 'nenhum'), flush=True)
+            fail = re.search(r"(?:var\s+)?FailStat\s*=\s*['\"](\d+)['\"]", result)
+            print('Diagnóstico de login: página de login=%s; FailStat=%s; cookies=%s' % ('txt_Password' in result, fail.group(1) if fail else 'ausente', ','.join(c.name for c in self.cookies) or 'nenhum'), flush=True)
             page = self.request('/index.asp')
             if not re.search(r'logout', page, re.I):
                 raise GatewayError('Login não confirmado. Verifique usuário, senha e permissões.')
+
+    def devices(self):
+        page = self.request('/html/bbsp/common/GetLanUserDevInfo.asp')
+        if 'var UserDevinfo' not in page or 'function USERDevice' not in page:
+            raise GatewayError('Não foi possível ler os dispositivos; a sessão pode ter expirado.')
+        found = {}
+        for match in re.finditer(r'new\s+USERDevice\s*\(([^)]*)\)', page):
+            raw = match.group(1)
+            # The firmware emits JavaScript \xHH escapes, which JSON does not accept.
+            raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: '\\u00' + m.group(1), raw)
+            try:
+                fields = json.loads('[' + raw + ']')
+            except (ValueError, TypeError):
+                raise GatewayError('O formato de dispositivos do gateway não foi reconhecido.')
+            if len(fields) < 14:
+                raise GatewayError('O gateway retornou uma lista de dispositivos incompleta.')
+            domain, ip, mac, port, _, _, status, kind, _, hostname = fields[:10]
+            mac = mac.lower()
+            if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
+                continue
+            if kind.upper() not in ('ETH', 'WIFI', 'ONU'):
+                continue
+            found[domain] = {'id': domain, 'ip': ip, 'mac': mac, 'port': port,
+                             'status': status.lower(), 'type': 'wifi' if kind.upper() == 'WIFI' else 'lan',
+                             'hostname': hostname, 'gateway_name': fields[13]}
+        return list(found.values())
 
     def reservations_page(self):
         page = self.request(PATH)
@@ -182,6 +191,16 @@ class Handler(BaseHTTPRequestHandler):
         if not s: raise GatewayError('Conecte-se ao gateway novamente.')
         return s
     def do_GET(self):
+        if self.path == '/api/devices':
+            try:
+                gateway = self.session()
+                with gateway.lock: rows = gateway.devices()
+                with labels() as db:
+                    saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
+                for row in rows: row['name'] = saved.get(row['mac'], '')
+                self.send_json(200, {'devices': rows})
+            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            return
         if self.path == '/api/reservations':
             try:
                 gateway = self.session()
@@ -207,7 +226,6 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if self.path == '/api/login':
                 gw = Gateway(body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
-                with gw.lock: gw.reservations()
                 key = secrets.token_urlsafe(32)
                 with LOCK: SESSIONS[key] = gw
                 self.send_json(200, {'ok': True}, key)

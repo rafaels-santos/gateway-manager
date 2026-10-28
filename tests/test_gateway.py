@@ -1,6 +1,4 @@
 import unittest
-from unittest.mock import patch
-from email.message import Message
 from app import Gateway, GatewayError, DOMAIN
 
 PAGE = r'''<script>var Dhcps = new Array(new stDhcp("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress.1","1","192\x2e168\x2e100\x2e100","aa\x3abb\x3acc\x3add\x3aee\x3aff"),null); getValue('onttoken');</script>'''
@@ -41,27 +39,16 @@ class GatewayTests(unittest.TestCase):
         gw = Gateway('192.168.100.254')
         gw.opener = Opener()
         self.assertEqual(gw.request('/asp/GetRandCount.asp', {}, xhr=True), 'a' * 64)
-    def test_login_uses_one_connection_and_installs_session_cookie(self):
-        class Response:
-            status = 200
-            def __init__(self, body, cookie=None):
-                self.body = body
-                self.headers = Message()
-                if cookie: self.headers.add_header('Set-Cookie', cookie)
-            def read(self, limit): return self.body
-        class Connection:
-            def __init__(self, host, port, timeout): self.calls = []
-            def request(self, method, path, body=None, headers=None): self.calls.append((method, path, headers))
-            def getresponse(self):
-                if len(self.calls) == 1: return Response(b"\xef\xbb\xbf" + b"a" * 64)
-                return Response(b'ok', 'Cookie=sid=abc:Language:english:id=1; Path=/')
-            def close(self): pass
-        gw = Gateway('192.168.100.254')
-        gw.request = lambda path: 'EG8145X6' if path == '/' else 'Logout'
-        with patch('app.http.client.HTTPConnection', Connection) as constructor:
-            gw.login('user', 'pass')
-        self.assertEqual(next(iter(gw.cookies)).value, 'sid=abc:Language:english:id=1')
-
+    def test_device_list_deduplicates_branches_and_decodes_fields(self):
+        row = r'new USERDevice("InternetGatewayDevice.LANDevice.1.X_HW_UserDev.1","192\x2e168\x2e1\x2e7","aa\x3abb\x3acc\x3add\x3aee\x3aff","SSID5","DHCP","","Online","WIFI","1\x3a2","Laptop\x2d1","1","0","0","Sala","","100","","","")'
+        gw = FakeGateway()
+        gw.request = lambda path: 'function USERDevice(){} var UserDevinfo = new Array(' + row + ',null); var UserDevinfo = new Array(' + row + ',null);'
+        devices = gw.devices()
+        self.assertEqual(len(devices), 1)
+        self.assertEqual((devices[0]['ip'], devices[0]['mac'], devices[0]['hostname'], devices[0]['gateway_name'], devices[0]['type'], devices[0]['status']), ('192.168.1.7','aa:bb:cc:dd:ee:ff','Laptop-1','Sala','wifi','online'))
+    def test_device_list_rejects_session_error(self):
+        gw = FakeGateway(); gw.request = lambda path: '<html>login</html>'
+        with self.assertRaises(GatewayError): gw.devices()
     def test_public_address_rejected(self):
         with self.assertRaises(GatewayError): Gateway('8.8.8.8')
 

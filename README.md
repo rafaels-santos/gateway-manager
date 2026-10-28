@@ -2,7 +2,7 @@
 
 Aplicativo para reservas DHCP no Huawei EG8145X6-10 (firmware V5R024C10S106). A integração de escrita é experimental: os formatos foram inspecionados no firmware e exercitados com gateway simulado, sem modificar o equipamento real. Confirme o resultado no painel do Huawei ao utilizar. A criação e edição de reservas são confirmadas por releitura; exclusão de reservas ainda não está implementada.
 
-Os nomes são etiquetas persistidas **somente neste aplicativo**, associadas ao MAC de uma reserva; não renomeiam o cliente no gateway nem no dispositivo. A listagem de todos os dispositivos Wi-Fi e a alteração do nome no Huawei ainda não estão implementadas. DHCP geral e DNS também não estão implementados.
+A aba Dispositivos lista clientes online de LAN e Wi-Fi, com nome informado pelo Huawei, IP e MAC. A lista é atualizada a cada 15 segundos enquanto a página está visível e também pelo botão Atualizar. Os identificadores são etiquetas persistidas **somente neste aplicativo**, associadas ao MAC; não renomeiam o cliente no gateway nem no dispositivo. A interface do Huawei tem mecanismo próprio de nome por MAC, mas a escrita pelo aplicativo ainda não foi validada. DHCP geral e DNS também não estão implementados.
 
 ## Executar no ZimaOS
 
