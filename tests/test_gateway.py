@@ -20,6 +20,14 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_block_refuses_whitelist_and_existing_disabled_rules(self):
+        gw=FakeGateway()
+        gw.devices=lambda:[{'mac':'aa:bb:cc:dd:ee:ff','type':'wifi','port':'SSID1'}]
+        for policy in ({'enabled':True,'blacklist':False,'rules':[]},{'enabled':False,'blacklist':True,'rules':[['old']]}):
+            gw.block_policy=lambda:policy
+            with patch.object(gw,'request') as write:
+                with self.assertRaises(GatewayError): gw.block_client({'mac':'aa:bb:cc:dd:ee:ff','confirm':'BLOQUEAR','activate':True})
+                write.assert_not_called()
     def test_gateway_registry_rejects_unknown_model_before_connecting(self):
         with self.assertRaises(GatewayError):
             app.create_gateway('outro-modelo', '192.168.100.254')

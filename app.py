@@ -262,6 +262,37 @@ class Gateway:
             url = '/set.cgi?' + urllib.parse.urlencode({'x': 'InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard', 'RequestFile': '../CustomApp/mainpage.asp'})
             self.request(url, {'x.X_HW_Token': token}, referer='/CustomApp/mainpage.asp')
 
+    def block_policy(self):
+        page = self.request('/html/bbsp/wlanmacfilter/wlanmacfilter.asp')
+        def flag(name):
+            match = re.search(r'var\s+' + name + r"\s*=\s*['\"]([01])['\"]", page)
+            if not match: raise GatewayError('Política de bloqueio não reconhecida.')
+            return match.group(1)
+        if 'onttoken' not in page or flag('FilterBySsidFlag') != '0': raise GatewayError('Modo de filtragem não suportado por esta integração.')
+        return {'enabled': flag('enableFilter') == '1', 'blacklist': flag('Mode') == '0', 'rules': parse_constructors(page, 'stMacFilter')}
+
+    def block_client(self, body):
+        with self.lock:
+            mac = str(body.get('mac', '')).lower()
+            if body.get('confirm') != 'BLOQUEAR': raise GatewayError('Confirmação de bloqueio inválida.')
+            device = next((d for d in self.devices() if d['mac'] == mac), None)
+            if not device or device['type'] != 'wifi' or not re.fullmatch(r'SSID[1-8]', device['port']): raise GatewayError('Bloqueio disponível apenas para clientes Wi-Fi com SSID identificado.')
+            policy = self.block_policy()
+            if not policy['blacklist']: raise GatewayError('O gateway usa lista de permissão; nenhuma alteração foi feita.')
+            if not policy['enabled'] and policy['rules']: raise GatewayError('Há regras desativadas no gateway. Revise-as no Huawei antes de ativar o filtro.')
+            if not policy['enabled'] and body.get('activate') is not True: raise GatewayError('Confirme a ativação do filtro Wi-Fi.')
+            path = '/html/bbsp/wlanmacfilter/wlanmacfilter.asp'
+            ssid = 'SSID-' + device['port'][4:]
+            exists = any(len(r)>=4 and r[1]==ssid and r[3].lower()==mac for r in policy['rules'])
+            if not exists:
+                url = '/add.cgi?' + urllib.parse.urlencode({'x':'InternetGatewayDevice.X_HW_Security.WLANMacFilter','RequestFile':path.lstrip('/')})
+                self.request(url, {'x.SourceMACAddress':mac,'x.SSIDName':ssid,'x.DeviceName':device.get('hostname','')[:80],'x.Enable':'1','x.X_HW_Token':self.config_token()}, referer=path)
+            if not policy['enabled']:
+                url = '/set.cgi?' + urllib.parse.urlencode({'x':'InternetGatewayDevice.X_HW_Security','RequestFile':path.lstrip('/')})
+                self.request(url, {'x.WlanMacFilterRight':'1','x.X_HW_Token':self.config_token()}, referer=path)
+            updated = self.block_policy()
+            if not updated['enabled'] or not updated['blacklist'] or not any(len(r)>=4 and r[1]==ssid and r[3].lower()==mac for r in updated['rules']): raise GatewayError('Bloqueio não confirmado. Confira o filtro no Huawei antes de tentar novamente.')
+
     def reservations(self):
         page = self.reservations_page()
         # Firmware serializes reservations as constructors in JavaScript.
@@ -532,6 +563,8 @@ class Handler(BaseHTTPRequestHandler):
                 with LOCK: SESSIONS[key] = gw
                 start_monitor(gw)
                 self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label}, key)
+            elif self.path == '/api/block':
+                self.session().block_client(body); self.send_json(200, {'ok': True})
             elif self.path == '/api/reservation':
                 self.session().save(body); self.send_json(200, {'ok': True})
             elif self.path in ('/api/dhcp', '/api/dns'):
