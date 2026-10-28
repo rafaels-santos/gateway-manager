@@ -20,6 +20,38 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_custom_event_template_and_discord_mentions_safety(self):
+        with patch.object(app,'send_discord') as send:
+            app.send_event('url','discord','ip_changed','{name}: {previous_ip} → {ip} {mac} {link}',{'mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.1.2'},'Celular','http://app','192.168.1.1')
+            text=send.call_args.kwargs['content_override']
+            self.assertIn('Celular: 192.168.1.1',text)
+            self.assertIn('AA:BB:CC:DD:EE:FF',text)
+            self.assertIn('/?device=aa%3Abb',text)
+
+    def test_generic_webhook_url_rejects_unsafe_forms(self):
+        self.assertEqual(app.validate_generic_webhook('https://example.com/hook?key=abc'),'https://example.com/hook?key=abc')
+        for url in ['http://example.com/hook','https://user:pass@example.com/hook','https://example.com:123/hook']:
+            with self.assertRaises(GatewayError):app.validate_generic_webhook(url)
+
+    def test_optional_monitor_events_and_no_repeat(self):
+        gw=FakeGateway();mac='aa:bb:cc:dd:ee:ff'
+        devices=[{'mac':mac,'status':'online','ip':'192.168.1.2','hostname':'Phone'}]
+        gw.devices=lambda:devices
+        gw.blocked_clients=lambda rows:[{'mac':mac,'block_active':False}]
+        with tempfile.TemporaryDirectory(dir=app.ROOT) as directory, patch.object(app,'DATA_DIR',app.Path(directory)):
+            with app.labels() as db:
+                db.execute('INSERT INTO webhook_config VALUES (?,?,?,?)',(gw.base,'https://example.com/hook',1,1))
+                db.execute('INSERT INTO seen_devices VALUES (?,?)',(gw.base,mac))
+                options={'provider':'generic','events':{k:{'enabled':True,'template':v[1]} for k,v in app.EVENTS.items()}}
+                db.execute('INSERT INTO webhook_options VALUES (?,?)',(gw.base,app.json.dumps(options)))
+            with patch.object(app,'send_event') as send:
+                app.monitor_once(gw);send.assert_not_called()
+                devices[0]['ip']='192.168.1.3';app.monitor_once(gw)
+                self.assertEqual([c.args[2] for c in send.call_args_list],['ip_changed','blocked_ip_changed'])
+                send.reset_mock();devices.clear();app.monitor_once(gw)
+                self.assertEqual([c.args[2] for c in send.call_args_list],['disconnected','blocked_disconnected'])
+                send.reset_mock();app.monitor_once(gw);send.assert_not_called()
+
     def test_block_sends_saved_identifier_as_device_name(self):
         gw=FakeGateway();mac='aa:bb:cc:dd:ee:ff'
         gw.devices=lambda:[{'mac':mac,'type':'wifi','port':'SSID1','hostname':'Original'}]
@@ -239,7 +271,7 @@ class GatewayTests(unittest.TestCase):
             def request(self, method, path, body, headers):
                 data = __import__('json').loads(body)
                 self.content = data['content']
-                self_outer.assertIn('Teste de notificação', self.content)
+                self_outer.assertIn('Teste de notifica', self.content)
                 self_outer.assertNotIn('MAC:', self.content)
             def getresponse(self): return Response()
             def close(self): pass
@@ -276,9 +308,9 @@ class GatewayTests(unittest.TestCase):
                 self.assertEqual(send.call_count,2)
     def test_reservations_show_gateway_names_and_shared_labels_by_mac(self):
         reservations = [{'mac': 'AA:BB:CC:DD:EE:FF', 'ip': '192.168.1.10'}]
-        devices = [{'mac':'aa:bb:cc:dd:ee:ff','hostname':'Notebook','gateway_name':'Escritório','status':'online'}]
+        devices = [{'mac':'aa:bb:cc:dd:ee:ff','hostname':'Notebook','gateway_name':'EscritÃ³rio','status':'online'}]
         result = app.enrich_reservations(reservations, devices, {'aa:bb:cc:dd:ee:ff':'Trabalho'})
-        self.assertEqual((result[0]['hostname'], result[0]['gateway_name'], result[0]['name']), ('Notebook','Escritório','Trabalho'))
+        self.assertEqual((result[0]['hostname'], result[0]['gateway_name'], result[0]['name']), ('Notebook','EscritÃ³rio','Trabalho'))
     def test_reservations_keep_local_labels_without_device_data(self):
         result = app.enrich_reservations([{'mac':'aa:bb:cc:dd:ee:ff'}], [], {'aa:bb:cc:dd:ee:ff':'Sala'})
         self.assertEqual((result[0]['hostname'],result[0]['name']), ('','Sala'))

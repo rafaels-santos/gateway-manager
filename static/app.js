@@ -102,16 +102,24 @@ $('#reservation').addEventListener('submit',async e=>{e.preventDefault();message
 async function refreshWebhook(){
   const data=await api('/api/webhook');
   if(webhookEditing) return;
+  $('#webhook-provider').value=data.options.provider;
+  const events=$('#webhook-events');events.replaceChildren();
+  for(const [key,setting] of Object.entries(data.options.events)){
+    const box=node('fieldset','webhook-event'),label=node('label','switch-label'),enabled=node('input');enabled.type='checkbox';enabled.checked=setting.enabled;enabled.dataset.eventEnabled=key;
+    label.append(enabled,document.createTextNode(data.event_labels[key]));
+    const template=node('textarea');template.value=setting.template;template.maxLength=1500;template.required=true;template.rows=5;template.dataset.eventTemplate=key;template.setAttribute('aria-label',`Mensagem: ${data.event_labels[key]}`);
+    box.append(label,template);events.append(box);
+  }
   $('#webhook-enabled').checked=data.enabled;
   $('#webhook-badge').textContent=data.enabled?'Ativado':data.configured?'Desativado':'Não configurado';
-  $('#webhook-url').placeholder=data.configured?'URL salva — preencha apenas para alterar':'https://discord.com/api/webhooks/...';
+  $('#webhook-url').placeholder=data.configured?'URL salva — preencha apenas para alterar':'https://seu-servico.example/webhook';
   $('#webhook-status').textContent=data.status;
 }
 $('#webhook-form').addEventListener('input',()=>{webhookEditing=true});
 $('#webhook-form').addEventListener('change',()=>{webhookEditing=true});
 $('#webhook-form').addEventListener('submit',async e=>{
   e.preventDefault(); const button=e.submitter; button.disabled=true;
-  try { await api('/api/webhook',{url:$('#webhook-url').value,enabled:$('#webhook-enabled').checked}); $('#webhook-url').value=''; webhookEditing=false; await refreshWebhook(); message('Configurações de notificação salvas.'); }
+  try { await api('/api/webhook',{url:$('#webhook-url').value,enabled:$('#webhook-enabled').checked,options:{provider:$('#webhook-provider').value,events:Object.fromEntries([...document.querySelectorAll('[data-event-enabled]')].map(el=>[el.dataset.eventEnabled,{enabled:el.checked,template:document.querySelector(`[data-event-template="${el.dataset.eventEnabled}"]`).value}]))}}); $('#webhook-url').value=''; webhookEditing=false; await refreshWebhook(); message('Configurações de notificação salvas.'); }
   catch(err) { message(err.message,true); } finally { button.disabled=false; }
 });
 $('#cancel').addEventListener('click',resetForm);$('#refresh-devices').addEventListener('click',refreshDevices);$('#refresh-reservations').addEventListener('click',()=>refreshReservations().catch(e=>message(e.message,true)));
@@ -119,7 +127,7 @@ $('#logout').addEventListener('click',async()=>{try{await api('/api/logout',{})}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('#dashboard').hidden)refreshDevices()});
 
 setInterval(()=>{if(!document.hidden && !$('#dashboard').hidden && !$('#page-notifications').hidden && document.activeElement!==$('#webhook-url')) refreshWebhook().catch(()=>{});},10000);
-$('#test-webhook').addEventListener('click',async e=>{const button=e.currentTarget; button.disabled=true; try { await api('/api/webhook/test',{}); message('Mensagem de teste enviada ao Discord.'); } catch(err) { message(err.message,true); } finally { button.disabled=false; }});
+$('#test-webhook').addEventListener('click',async e=>{const button=e.currentTarget; button.disabled=true; try { await api('/api/webhook/test',{}); message('Mensagem de teste enviada ao webhook salvo.'); } catch(err) { message(err.message,true); } finally { button.disabled=false; }});
 async function loadNetworkConfig(page){
   const status=$(`#${page}-status`); status.textContent='Consultando gateway...';
   try{const {config:c}=await api('/api/dhcp'); if(page==='dhcp'){ $('#dhcp-enabled').checked=c.enabled; $('#dhcp-start').value=c.start; $('#dhcp-end').value=c.end; $('#dhcp-lease').value=c.lease; $('#dhcp-network').textContent=`Gateway ${c.lan_ip} · Máscara ${c.mask}`; } else {$('#dns-primary').value=c.dns_primary; $('#dns-secondary').value=c.dns_secondary;} status.textContent='Dados carregados do gateway.';}catch(e){status.textContent=e.message;}

@@ -39,6 +39,8 @@ def labels():
     db.execute('CREATE TABLE IF NOT EXISTS seen_devices (gateway TEXT NOT NULL, mac TEXT NOT NULL, PRIMARY KEY (gateway, mac))')
     db.execute('CREATE TABLE IF NOT EXISTS app_origins (gateway TEXT PRIMARY KEY, origin TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS device_tags (gateway TEXT NOT NULL, mac TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (gateway, mac))')
+    db.execute('CREATE TABLE IF NOT EXISTS webhook_options (gateway TEXT PRIMARY KEY, options TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS webhook_state (gateway TEXT, mac TEXT, state TEXT NOT NULL, PRIMARY KEY(gateway,mac))')
     try:
         if os.name != 'nt': os.chmod(DATA_DIR / 'labels.db', 0o600)
         with db:
@@ -406,6 +408,46 @@ class Gateway:
             if not any(r['ip'] == ip and r['mac'] == mac for r in updated):
                 raise GatewayError('O gateway não confirmou a reserva. Verifique a interface original antes de tentar novamente.')
 
+EVENTS = {
+    'connected': ('Novo dispositivo', 'Um novo dispositivo foi conectado ao roteador,\nNome: {name}\nIP: {ip}\nMAC: {mac}\n{link}', True),
+    'disconnected': ('Dispositivo desconectado', 'Dispositivo desconectado.\nNome: {name}\nIP: {ip}\nMAC: {mac}\n{link}', False),
+    'ip_changed': ('IP alterado', 'O IP do dispositivo mudou.\nNome: {name}\nIP anterior: {previous_ip}\nIP atual: {ip}\nMAC: {mac}\n{link}', False),
+    'blocked_ip_changed': ('Cliente com regra de bloqueio mudou de IP', 'Cliente com regra de bloqueio mudou de IP.\nNome: {name}\nIP anterior: {previous_ip}\nIP atual: {ip}\nMAC: {mac}\nBloqueio ativo: {block_active}\n{link}', False),
+    'blocked_disconnected': ('Cliente com regra de bloqueio desconectou', 'Cliente com regra de bloqueio desconectado.\nNome: {name}\nIP: {ip}\nMAC: {mac}\nBloqueio ativo: {block_active}\n{link}', False),
+}
+
+def webhook_options(db, gateway):
+    row = db.execute('SELECT options FROM webhook_options WHERE gateway=?', (gateway,)).fetchone()
+    options = json.loads(row[0]) if row else {}
+    return {'provider':options.get('provider','discord'), 'events':{k:options.get('events',{}).get(k,{'enabled':v[2],'template':v[1]}) for k,v in EVENTS.items()}}
+
+def validate_generic_webhook(url):
+    try:
+        parsed=urllib.parse.urlsplit(url)
+        if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password or parsed.fragment or parsed.port not in (None,443): raise ValueError()
+    except ValueError: raise GatewayError('Informe uma URL HTTPS válida, sem credenciais no endereço e na porta 443.')
+    return url
+
+def send_event(url, provider, event, template, device, name, origin, previous_ip='', block_active=False):
+    values={'name':name or device.get('gateway_name') or device.get('hostname') or 'Dispositivo sem nome', 'ip':device.get('ip') or 'Não informado', 'mac':device['mac'].upper(), 'previous_ip':previous_ip, 'link':origin.rstrip('/')+'/?device='+urllib.parse.quote(device['mac'],safe='') if origin else '', 'block_active':'Sim' if block_active else 'Não', 'event':event}
+    text=template
+    for key,value in values.items(): text=text.replace('{'+key+'}',str(value))
+    if provider=='discord': return send_discord(url, content_override=text)
+    import socket, ssl
+    parsed=urllib.parse.urlsplit(validate_generic_webhook(url))
+    try:
+        addresses=socket.getaddrinfo(parsed.hostname,443,type=socket.SOCK_STREAM)
+        if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses): raise GatewayError('Webhook genérico deve apontar para um endereço público.')
+        payload=json.dumps({'event':event,'text':text,'device':values},ensure_ascii=False).encode('utf-8')
+        conn=http.client.HTTPSConnection(parsed.hostname,timeout=10)
+        conn.sock=ssl.create_default_context().wrap_socket(socket.create_connection((addresses[0][4][0],443),timeout=10),server_hostname=parsed.hostname)
+        try:
+            conn.request('POST',urllib.parse.urlunsplit(('', '', parsed.path or '/', parsed.query, '')),body=payload,headers={'Content-Type':'application/json'})
+            response=conn.getresponse();response.read(65536)
+            if not 200<=response.status<300: raise GatewayError('Webhook recusou a notificação (HTTP %s).'%response.status)
+        finally: conn.close()
+    except (OSError,http.client.HTTPException): raise GatewayError('Não foi possível enviar a notificação ao webhook.')
+
 def validate_webhook(url):
     try:
         parsed = urllib.parse.urlsplit(url)
@@ -420,7 +462,7 @@ def validate_webhook(url):
     return url
 
 
-def send_discord(url, device=None, name='', app_origin=''):
+def send_discord(url, device=None, name='', app_origin='', content_override=None):
     import http.client
     parsed = urllib.parse.urlsplit(validate_webhook(url))
     if device is None:
@@ -432,6 +474,7 @@ def send_discord(url, device=None, name='', app_origin=''):
         content = 'Um novo dispositivo foi conectado ao roteador,\nNome: %s\nIP: %s\nMAC: %s' % (title, address, device['mac'])
         if app_origin:
             content += '\nAbrir dispositivo: %s/?device=%s' % (app_origin.rstrip('/'), urllib.parse.quote(device['mac'], safe=''))
+    if content_override is not None: content = content_override
     payload = json.dumps({'content': content, 'allowed_mentions': {'parse': []}}, ensure_ascii=False).encode('utf-8')
     conn = http.client.HTTPSConnection(parsed.hostname, timeout=10)
     try:
@@ -458,14 +501,38 @@ def monitor_once(gw):
             db.executemany('INSERT OR IGNORE INTO seen_devices (gateway, mac) VALUES (?,?)', ((gw.base, d['mac']) for d in all_devices))
             db.execute('UPDATE webhook_config SET baseline=1 WHERE gateway=?', (gw.base,))
             return 'Monitorando; dispositivos atuais registrados como referência.'
+        options = webhook_options(db, gw.base)
         names = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gw.base,)))
         origin_row = db.execute('SELECT origin FROM app_origins WHERE gateway=?', (gw.base,)).fetchone()
     pending = {d['mac']: d for d in devices if d['mac'] not in seen}
     for mac, device in pending.items():
-        send_discord(config[0], device, names.get(mac, ''), origin_row[0] if origin_row else '')
+        setting=options['events']['connected']
+        if setting['enabled']:
+            if options['provider']=='discord' and setting['template']==EVENTS['connected'][1]: send_discord(config[0], device, names.get(mac, ''), origin_row[0] if origin_row else '')
+            else: send_event(config[0], options['provider'], 'connected', setting['template'], device, names.get(mac,''), origin_row[0] if origin_row else '')
         with labels() as db:
             db.execute('INSERT OR IGNORE INTO seen_devices (gateway,mac) VALUES (?,?)', (gw.base, mac))
-    return 'Monitorando dispositivos a cada 30 segundos.'
+    extra_enabled=any(options['events'][k]['enabled'] for k in EVENTS if k!='connected')
+    blocked={}
+    if extra_enabled and any(options['events'][k]['enabled'] for k in ('blocked_ip_changed','blocked_disconnected')):
+        with gw.lock: blocked={d['mac']:d for d in gw.blocked_clients(all_devices)}
+    with labels() as db:
+        previous={mac:json.loads(state) for mac,state in db.execute('SELECT mac,state FROM webhook_state WHERE gateway=?',(gw.base,))}
+    current={d['mac']:dict(d) for d in all_devices}
+    for mac, old in previous.items():
+        if mac not in current: current[mac]=dict(old,status='offline')
+    for mac, device in current.items():
+        old=previous.get(mac)
+        events=[]
+        if old:
+            if old.get('status')=='online' and device['status']!='online': events.append('disconnected'); events.extend(['blocked_disconnected'] if mac in blocked else [])
+            if device['status']=='online' and old.get('ip') and device.get('ip') and old['ip']!=device['ip']: events.append('ip_changed'); events.extend(['blocked_ip_changed'] if mac in blocked else [])
+        for event in events:
+            setting=options['events'][event]
+            if setting['enabled']: send_event(config[0],options['provider'],event,setting['template'],device,names.get(mac,''),origin_row[0] if origin_row else '',old.get('ip',''),blocked.get(mac,{}).get('block_active',False))
+        with labels() as db:
+            db.execute('INSERT INTO webhook_state VALUES (?,?,?) ON CONFLICT(gateway,mac) DO UPDATE SET state=excluded.state',(gw.base,mac,json.dumps(device)))
+    return 'Monitorando eventos a cada 30 segundos.'
 
 
 def start_monitor(gw):
@@ -557,8 +624,9 @@ class Handler(BaseHTTPRequestHandler):
                 gw = self.session()
                 with labels() as db:
                     row = db.execute('SELECT enabled FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
+                    options = webhook_options(db, gw.base)
                 with LOCK: entry = MONITORS.get(gw.base)
-                self.send_json(200, {'configured': bool(row), 'enabled': bool(row and row[0]), 'status': entry['status'] if entry else 'Sessão sem monitoramento.'})
+                self.send_json(200, {'options':options, 'event_labels':{k:v[0] for k,v in EVENTS.items()}, 'configured': bool(row), 'enabled': bool(row and row[0]), 'status': entry['status'] if entry else 'Sessão sem monitoramento.'})
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
         if self.path == '/api/logs':
@@ -665,10 +733,17 @@ class Handler(BaseHTTPRequestHandler):
                 enabled = body.get('enabled') is True
                 with labels() as db:
                     old = db.execute('SELECT url FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
-                    if url: validate_webhook(url)
+                    options=body.get('options',webhook_options(db,gw.base))
+                    if options.get('provider') not in ('discord','generic'): raise GatewayError('Tipo de webhook inválido.')
+                    if set(options.get('events',{}))!=set(EVENTS): raise GatewayError('Eventos inválidos.')
+                    for setting in options['events'].values():
+                        if not isinstance(setting.get('enabled'),bool) or not isinstance(setting.get('template'),str) or not 1<=len(setting['template'])<=1500: raise GatewayError('Mensagem deve ter entre 1 e 1.500 caracteres.')
+                    if url: (validate_webhook if options['provider']=='discord' else validate_generic_webhook)(url)
                     elif old: url = old[0]
-                    elif enabled: raise GatewayError('Informe a URL do webhook do Discord.')
+                    elif enabled: raise GatewayError('Informe a URL do webhook.')
                     else: raise GatewayError('Nenhum webhook configurado.')
+                    (validate_webhook if options['provider']=='discord' else validate_generic_webhook)(url)
+                    db.execute('INSERT INTO webhook_options VALUES (?,?) ON CONFLICT(gateway) DO UPDATE SET options=excluded.options',(gw.base,json.dumps(options)))
                     db.execute('INSERT INTO webhook_config (gateway,url,enabled) VALUES (?,?,?) ON CONFLICT(gateway) DO UPDATE SET url=excluded.url,enabled=excluded.enabled', (gw.base, url, int(enabled)))
                 with LOCK: entry = MONITORS.get(gw.base)
                 if entry: entry['wake'].set()
@@ -677,8 +752,10 @@ class Handler(BaseHTTPRequestHandler):
                 gw = self.session()
                 with labels() as db:
                     row = db.execute('SELECT url FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
+                    options=webhook_options(db,gw.base)
                 if not row: raise GatewayError('Salve a URL do webhook antes de testar.')
-                send_discord(row[0])
+                if options['provider']=='discord': send_discord(row[0])
+                else: send_event(row[0],'generic','test','Teste de notificação do Gateway Manager.',{'mac':'','ip':''},'', '')
                 self.send_json(200, {'ok': True})
             elif self.path == '/api/tag':
                 gw = self.session()

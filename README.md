@@ -58,3 +58,12 @@ O ícone para ZimaOS está disponível em `https://raw.githubusercontent.com/raf
 O catálogo `/api/gateway-types` é gerado pelo registro `GATEWAY_ADAPTERS` em `app.py`. Para um novo modelo, implemente um adaptador próprio com `model_id`, `model_label`, `base`, `lock`, `login`, `devices`, `reservations`, `save`, `dhcp_config`, `save_dhcp`, `wifi_config`, `save_wifi` e `reboot`, seguindo os formatos de dados usados pela API e implementando verificação de sessão, validação e erros adequados. Registre-o somente após validar suas operações e permissões. O adaptador Huawei contém lógica específica do firmware e não é compatível automaticamente com outros modelos.
 
 O formulário de login permite o preenchimento automático e tenta solicitar o armazenamento da senha pelo gerenciador do navegador após autenticação bem-sucedida, quando a Credential Management API estiver disponível em contexto seguro. Em HTTP de rede local, a exibição do aviso depende do navegador e não pode ser garantida.
+
+
+### Webhooks de eventos
+
+Em Notificações, escolha Discord ou Webhook genérico. O formato genérico aceita um endpoint HTTPS público na porta 443 e envia `{"event":"ip_changed","text":"mensagem personalizada","device":{...}}`. Redirecionamentos não são seguidos. A URL salva não é devolvida ao navegador.
+
+Cada evento tem ativação e texto independentes: novo MAC online, desconexão, mudança de IP e as duas últimas condições para clientes com regra de bloqueio. Somente novo dispositivo fica ativo por padrão. Se eventos gerais e específicos estiverem ativos, ambos serão enviados. Regras inativas são identificadas pelo campo `{block_active}`. Mudança de IP significa diferença da última leitura, não desvio de reserva DHCP. O monitor consulta a cada 30 segundos; não representa captura em tempo real. A primeira observação cria referência sem disparar eventos de transição.
+
+Variáveis: `{name}`, `{ip}`, `{previous_ip}`, `{mac}`, `{link}`, `{block_active}`, `{event}`. Mensagens aceitam até 1.500 caracteres. O botão de teste usa o endpoint e formato já salvos. Novos eventos dependem de uma sessão ativa com o gateway.
