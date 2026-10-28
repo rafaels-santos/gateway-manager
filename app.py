@@ -62,6 +62,8 @@ def parse_constructors(page, name):
     return result
 
 class Gateway:
+    model_id = 'huawei-eg8145x6-10'
+    model_label = 'Huawei EG8145X6-10'
     def __init__(self, address):
         address = address.strip()
         if '://' not in address:
@@ -417,6 +419,14 @@ def mark_fixed_addresses(devices, reservations):
         device['ip_static'] = device.get('ip_type', '').strip().lower() == 'static'
     return devices
 
+# Register only adapters that have been implemented and validated.
+GATEWAY_ADAPTERS = {Gateway.model_id: Gateway}
+
+def create_gateway(model_id, address):
+    adapter = GATEWAY_ADAPTERS.get(model_id)
+    if not adapter: raise GatewayError('Modelo de gateway não suportado. Selecione um modelo disponível.')
+    return adapter(address)
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         # Do not log form data, gateway addresses, or credentials.
@@ -433,11 +443,14 @@ class Handler(BaseHTTPRequestHandler):
         if not s: raise GatewayError('Conecte-se ao gateway novamente.')
         return s
     def do_GET(self):
+        if self.path == '/api/gateway-types':
+            self.send_json(200, {'models': [{'id': key, 'label': adapter.model_label} for key, adapter in GATEWAY_ADAPTERS.items()]})
+            return
         if self.path == '/api/session':
             try:
                 gw = self.session()
                 with gw.lock: gw.devices()
-                self.send_json(200, {'connected': True})
+                self.send_json(200, {'connected': True, 'model': gw.model_id, 'model_label': gw.model_label})
             except GatewayError as e: self.send_json(401, {'error': str(e)})
             return
         if self.path == '/api/webhook':
@@ -509,7 +522,7 @@ class Handler(BaseHTTPRequestHandler):
             if length <= 0 or length > 8192: raise GatewayError('Requisição inválida.')
             body = json.loads(self.rfile.read(length))
             if self.path == '/api/login':
-                gw = Gateway(body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
+                gw = create_gateway(body.get('model', Gateway.model_id), body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
                 parsed_origin = urllib.parse.urlsplit(origin)
                 if parsed_origin.scheme not in ('http', 'https') or not parsed_origin.hostname or parsed_origin.username or parsed_origin.password or parsed_origin.path or parsed_origin.query or parsed_origin.fragment:
                     raise GatewayError('Endereço do aplicativo inválido.')
@@ -518,7 +531,7 @@ class Handler(BaseHTTPRequestHandler):
                 key = secrets.token_urlsafe(32)
                 with LOCK: SESSIONS[key] = gw
                 start_monitor(gw)
-                self.send_json(200, {'ok': True}, key)
+                self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label}, key)
             elif self.path == '/api/reservation':
                 self.session().save(body); self.send_json(200, {'ok': True})
             elif self.path in ('/api/dhcp', '/api/dns'):

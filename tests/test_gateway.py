@@ -20,6 +20,15 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_gateway_registry_rejects_unknown_model_before_connecting(self):
+        with self.assertRaises(GatewayError):
+            app.create_gateway('outro-modelo', '192.168.100.254')
+    def test_gateway_registry_supports_new_adapters(self):
+        class Adapter:
+            model_label = 'Modelo de teste'
+            def __init__(self, address): self.address = address
+        with patch.dict(app.GATEWAY_ADAPTERS, {'teste': Adapter}):
+            self.assertEqual(app.create_gateway('teste', '192.168.1.1').address, '192.168.1.1')
     def test_device_tag_persists_and_can_be_removed(self):
         import io, json
         from pathlib import Path
