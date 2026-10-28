@@ -1,5 +1,5 @@
 const $ = s => document.querySelector(s);
-let reservations = [], deviceTimer = null, loadingDevices = false, webhookEditing = false, currentDevice = null, deviceView = 'online', pendingDevice = new URLSearchParams(location.search).get('device')?.toLowerCase() || '';
+let reservations = [], deviceTimer = null, loadingDevices = false, currentDevice = null, deviceView = 'online', pendingDevice = new URLSearchParams(location.search).get('device')?.toLowerCase() || '';
 const zoneFilters = {wifi:{network:'',tag:'',name:''},lan:{network:'',tag:'',name:''},offline:{network:'',tag:'',name:''},blocked:{network:'',tag:'',name:''}};
 async function api(path, body) {
   const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
@@ -99,35 +99,49 @@ $('#connect').addEventListener('submit',async e=>{e.preventDefault();if(!$('#gat
 loadGatewayModels();
 api('/api/session').then(session=>showDashboard(session)).catch(()=>{});
 $('#reservation').addEventListener('submit',async e=>{e.preventDefault();message('Salvando reserva...');try{const mac=$('#mac').value.trim().toLowerCase(),id=$('#reservation-id').value,ip=$('#ip').value.trim();const old=reservations.find(row=>row.id===id);if(!old||old.mac!==mac||old.ip!==ip)await api('/api/reservation',{id,mac,ip});try{await api('/api/name',{mac,name:$('#name').value})}catch(err){message('Reserva salva, mas o identificador não foi salvo: '+err.message,true);await refreshReservations();return}resetForm();await refreshReservations();message('Dados salvos.')}catch(err){message(err.message,true)}});
+let hookData={hooks:[],defaults:{},event_labels:{}},editingHook=null,hookBusy=false;
+const hookFields={discord:[['url','URL do webhook','password']],generic:[['url','URL HTTPS pública','password']],slack:[['url','URL incoming webhook','password']],telegram:[['token','Token do bot','password'],['chat_id','Chat ID ou @canal','text']],whatsapp:[['token','Token de acesso Meta','password'],['phone_id','Phone Number ID','text'],['recipient','Destinatário com DDI (somente números)','text'],['version','Versão Graph API da sua conta (vXX.0)','text'],['template','Nome do template aprovado','text'],['language','Idioma do template (ex.: pt_BR)','text']]};
+const hookHelp={discord:'Crie um webhook no canal Discord e copie sua URL.',generic:'Endpoint HTTPS público na porta 443. Recebe JSON com event, text e device. Não segue redirecionamentos.',slack:'Crie um Incoming Webhook no app Slack e selecione o canal de destino.',telegram:'Crie um bot com @BotFather. Inicie a conversa com o bot ou adicione-o ao grupo/canal com permissão para enviar. Informe o chat_id do destino.',whatsapp:'Requer WhatsApp Business Cloud API, token válido e template aprovado com exatamente um parâmetro posicional no corpo ({{1}}), sem parâmetros em cabeçalho ou botões. A mensagem do evento preenche esse parâmetro, em uma linha e até 900 caracteres. Use destinatário autorizado a receber mensagens. Não conecta WhatsApp pessoal por QR Code.'};
+function hookDate(value){return value?new Date(value).toLocaleString('pt-BR'):'Ainda não realizado';}
 async function refreshWebhook(){
-  const data=await api('/api/webhook');
-  if(webhookEditing) return;
-  $('#webhook-provider').value=data.options.provider;
-  const events=$('#webhook-events');events.replaceChildren();
-  for(const [key,setting] of Object.entries(data.options.events)){
-    const box=node('fieldset','webhook-event'),label=node('label','switch-label'),enabled=node('input');enabled.type='checkbox';enabled.checked=setting.enabled;enabled.dataset.eventEnabled=key;
-    label.append(enabled,document.createTextNode(data.event_labels[key]));
-    const template=node('textarea');template.value=setting.template;template.maxLength=1500;template.required=true;template.rows=5;template.dataset.eventTemplate=key;template.setAttribute('aria-label',`Mensagem: ${data.event_labels[key]}`);
-    box.append(label,template);events.append(box);
+  if($('#hook-dialog').open)return;
+  const data=await api('/api/hooks');if($('#hook-dialog').open)return;hookData=data;$('#create-hook').disabled=false;$('#hooks-status').textContent=data.status;const list=$('#hooks-list');list.replaceChildren();
+  if(!data.hooks.length)list.append(node('p','empty','Nenhum hook criado. Adicione seu primeiro destino de notificações.'));
+  for(const hook of data.hooks){
+    const card=node('article','panel hook-card'),head=node('div','panel-header'),title=node('div');title.append(node('h2','',hook.name),node('p','muted',`${data.providers[hook.provider]} · ${hook.enabled?'Ativado':'Desativado'}`));head.append(title);card.append(head);
+    card.append(node('p',hook.valid?'hook-valid':'hook-invalid',hook.validation),node('p','muted',`Último teste aceito: ${hookDate(hook.last_test)} · Último evento aceito: ${hookDate(hook.last_sent)}`));
+    if(hook.error)card.append(node('p','hook-invalid',hook.error));
+    const details=node('details','hook-details');details.append(node('summary','','Ver configurações e mensagens'));
+    for(const [key,label,type] of hookFields[hook.provider])details.append(node('p','muted',`${label}: ${type==='password'?(hook.credentials_saved?'Salvo · oculto':'Não configurado'):(hook.config[key]||'Não informado')}`));
+    for(const [key,setting] of Object.entries(hook.events)){const section=node('div','hook-event-summary');section.append(node('strong','',`${data.event_labels[key]} · ${setting.enabled?'Ativado':'Desativado'}`),node('pre','',setting.template));details.append(section);}
+    card.append(details);const actions=node('div','actions'),edit=node('button','secondary','Editar'),test=node('button','secondary','Testar hook');edit.type=test.type='button';edit.addEventListener('click',()=>openHook(hook));test.addEventListener('click',async()=>{test.disabled=true;try{await api('/api/hooks/test',{id:hook.id});message('Teste aceito pelo serviço. Confira o destino.');}catch(e){message(e.message,true);}finally{test.disabled=false;await refreshWebhook();}});actions.append(edit,test);card.append(actions);list.append(card);
   }
-  $('#webhook-enabled').checked=data.enabled;
-  $('#webhook-badge').textContent=data.enabled?'Ativado':data.configured?'Desativado':'Não configurado';
-  $('#webhook-url').placeholder=data.configured?'URL salva — preencha apenas para alterar':'https://seu-servico.example/webhook';
-  $('#webhook-status').textContent=data.status;
 }
-$('#webhook-form').addEventListener('input',()=>{webhookEditing=true});
-$('#webhook-form').addEventListener('change',()=>{webhookEditing=true});
-$('#webhook-form').addEventListener('submit',async e=>{
-  e.preventDefault(); const button=e.submitter; button.disabled=true;
-  try { await api('/api/webhook',{url:$('#webhook-url').value,enabled:$('#webhook-enabled').checked,options:{provider:$('#webhook-provider').value,events:Object.fromEntries([...document.querySelectorAll('[data-event-enabled]')].map(el=>[el.dataset.eventEnabled,{enabled:el.checked,template:document.querySelector(`[data-event-template="${el.dataset.eventEnabled}"]`).value}]))}}); $('#webhook-url').value=''; webhookEditing=false; await refreshWebhook(); message('Configurações de notificação salvas.'); }
-  catch(err) { message(err.message,true); } finally { button.disabled=false; }
+function renderHookFields(){
+  const provider=$('#hook-provider').value,fields=$('#hook-fields');fields.replaceChildren();$('#hook-help').textContent=hookHelp[provider];
+  for(const [key,label,type] of hookFields[provider]){const wrap=node('label','',label),input=node('input');input.type=type;input.dataset.hookField=key;input.autocomplete='off';input.maxLength=2048;const saved=editingHook&&editingHook.provider===provider;input.value=saved&&type!=='password'?(editingHook.config[key]||''):'';input.required=!(saved&&type==='password'&&editingHook.credentials_saved);if(!input.required)input.placeholder='Salvo — deixe vazio para manter';wrap.append(input);fields.append(wrap);}
+}
+function openHook(hook=null){
+  editingHook=hook;$('#hook-form').reset();$('#hook-title').textContent=hook?'Editar hook':'Criar hook';$('#hook-name').value=hook?.name||'';$('#hook-provider').value=hook?.provider||'discord';$('#hook-enabled').checked=hook?.enabled??true;$('#hook-feedback').textContent='';renderHookFields();
+  const events=$('#hook-events');events.replaceChildren();for(const [key,setting] of Object.entries(hook?.events||hookData.defaults)){const box=node('fieldset','webhook-event'),label=node('label','switch-label'),enabled=node('input');enabled.type='checkbox';enabled.checked=setting.enabled;enabled.dataset.hookEvent=key;label.append(enabled,document.createTextNode(hookData.event_labels[key]));const textarea=node('textarea');textarea.value=setting.template;textarea.dataset.hookTemplate=key;textarea.maxLength=1500;textarea.required=true;textarea.rows=4;textarea.setAttribute('aria-label',`Mensagem: ${hookData.event_labels[key]}`);box.append(label,textarea);events.append(box);}
+  $('#hook-dialog').showModal();
+}
+$('#create-hook').addEventListener('click',()=>openHook());
+$('#close-hook').addEventListener('click',()=>{if(!hookBusy)$('#hook-dialog').close();});
+$('#hook-dialog').addEventListener('cancel',e=>{if(hookBusy)e.preventDefault();});
+$('#hook-provider').addEventListener('change',renderHookFields);
+$('#hook-form').addEventListener('submit',async e=>{
+  e.preventDefault();if(hookBusy)return;hookBusy=true;const test=e.submitter.id==='save-test-hook';$('#save-hook').disabled=$('#save-test-hook').disabled=true;$('#hook-feedback').textContent='Salvando…';
+  const body={id:editingHook?.id,name:$('#hook-name').value,provider:$('#hook-provider').value,enabled:$('#hook-enabled').checked,config:Object.fromEntries([...document.querySelectorAll('[data-hook-field]')].map(el=>[el.dataset.hookField,el.value])),events:Object.fromEntries([...document.querySelectorAll('[data-hook-event]')].map(el=>[el.dataset.hookEvent,{enabled:el.checked,template:document.querySelector(`[data-hook-template="${el.dataset.hookEvent}"]`).value}]))};
+  try{const saved=await api('/api/hooks',body);editingHook={...body,config:Object.fromEntries(Object.entries(body.config).filter(([key])=>!['url','token'].includes(key))),id:saved.id,credentials_saved:true};document.querySelectorAll('[data-hook-field]').forEach(el=>{if(el.type==='password'){el.value='';el.required=false;el.placeholder='Salvo — deixe vazio para manter';}});if(test){$('#hook-feedback').textContent='Hook salvo. Enviando teste…';try{await api('/api/hooks/test',{id:saved.id});}catch(error){$('#hook-feedback').textContent=`Hook salvo, mas o teste falhou: ${error.message}`;return;}}$('#hook-dialog').close();await refreshWebhook();message(test?'Hook salvo e teste aceito pelo serviço.':'Hook salvo. Use Testar hook para validar o envio.');}
+  catch(error){$('#hook-feedback').textContent=error.message;}finally{hookBusy=false;$('#save-hook').disabled=$('#save-test-hook').disabled=false;}
 });
 $('#cancel').addEventListener('click',resetForm);$('#refresh-devices').addEventListener('click',refreshDevices);$('#refresh-reservations').addEventListener('click',()=>refreshReservations().catch(e=>message(e.message,true)));
-$('#logout').addEventListener('click',async()=>{try{await api('/api/logout',{})}finally{clearInterval(deviceTimer);webhookEditing=false;$('#webhook-url').value='';$('#dashboard').hidden=true;$('#login-screen').hidden=false;resetForm();message('Sessão encerrada.')}});
+$('#logout').addEventListener('click',async()=>{try{await api('/api/logout',{})}finally{clearInterval(deviceTimer);editingHook=null;$('#hook-dialog').close();$('#hook-form').reset();$('#dashboard').hidden=true;$('#login-screen').hidden=false;resetForm();message('Sessão encerrada.')}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('#dashboard').hidden)refreshDevices()});
 
-setInterval(()=>{if(!document.hidden && !$('#dashboard').hidden && !$('#page-notifications').hidden && document.activeElement!==$('#webhook-url')) refreshWebhook().catch(()=>{});},10000);
-$('#test-webhook').addEventListener('click',async e=>{const button=e.currentTarget; button.disabled=true; try { await api('/api/webhook/test',{}); message('Mensagem de teste enviada ao webhook salvo.'); } catch(err) { message(err.message,true); } finally { button.disabled=false; }});
+setInterval(()=>{if(!document.hidden && !$('#dashboard').hidden && !$('#page-notifications').hidden && !$('#hook-dialog').open) refreshWebhook().catch(()=>{});},10000);
+
 async function loadNetworkConfig(page){
   const status=$(`#${page}-status`); status.textContent='Consultando gateway...';
   try{const {config:c}=await api('/api/dhcp'); if(page==='dhcp'){ $('#dhcp-enabled').checked=c.enabled; $('#dhcp-start').value=c.start; $('#dhcp-end').value=c.end; $('#dhcp-lease').value=c.lease; $('#dhcp-network').textContent=`Gateway ${c.lan_ip} · Máscara ${c.mask}`; } else {$('#dns-primary').value=c.dns_primary; $('#dns-secondary').value=c.dns_secondary;} status.textContent='Dados carregados do gateway.';}catch(e){status.textContent=e.message;}

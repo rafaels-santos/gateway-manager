@@ -41,15 +41,25 @@ Testes locais: `python -m unittest discover -s tests -v`.
 
 Caso o contêiner não inicie, consulte `docker compose logs gateway-manager` e verifique se a porta 8080 está disponível. Para mudar a porta externa, substitua `8080:8080` por `8081:8080`.
 
-## Notificações no Discord
+## Notificações por hooks
 
-Na aba **Notificações**, informe a URL de webhook criada no canal do Discord e ative o monitoramento. A primeira leitura registra os dispositivos conhecidos pelo gateway como referência, sem enviar avisos, inclusive os que estiverem offline. O aplicativo verifica a rede a cada 30 segundos e notifica uma vez por MAC novo. Em caso de falha no envio, o dispositivo permanece pendente para uma próxima verificação enquanto estiver online. A URL e os MACs já vistos são guardados no volume `/data`; a URL não volta a ser exibida pela interface.
+A aba **Notificações**, acima de Reinício, lista os destinos cadastrados. Use **Criar hook** para abrir o popup e escolher Discord, Telegram, WhatsApp Cloud API, Slack ou webhook genérico. É possível cadastrar vários hooks do mesmo serviço (até 20 por gateway), cada um com nome, ativação e mensagens por evento independentes. **Editar** permite mudar as configurações ou desativar um destino.
 
-O botão **Testar webhook salvo** envia uma mensagem de teste ao canal, inclusive quando as notificações automáticas estão desativadas. Salve a URL antes de testar.
+**Salvar hook** valida os campos e persiste a configuração. **Salvar e testar** também envia uma mensagem simples; cada card possui **Testar hook** para repetir o teste inclusive com o hook desativado. Sucesso indica aceitação pelo serviço, não entrega/leitura pelo destinatário. Alterar a configuração exige novo teste. URL e tokens não são devolvidos ao navegador; campos secretos vazios em edição preservam o valor salvo para o mesmo serviço.
 
-As notificações de novos dispositivos incluem um link direto para os detalhes no aplicativo. O endereço é aquele usado para o último login no Gateway Manager; os destinatários precisam conseguir acessá-lo e ter uma sessão no aplicativo. Se necessário, o link abre o card após o login. O endereço MAC é incluído no link.
+O webhook único anterior é migrado automaticamente para **Hook existente**, preservando formato, eventos, ativação e referência de dispositivos conhecidos. Ele é apresentado como não testado até que um teste seja executado. Os dados antigos são mantidos para recuperação, mas deixam de ser utilizados pelo monitor. Não há envio automático de teste durante a migração.
 
-O monitor roda no servidor enquanto existir uma sessão válida com o gateway, inclusive com a página fechada. O aplicativo recupera a sessão ao reabrir a página e tenta reconectar ao gateway se a sessão expirar. As credenciais ficam somente na memória do processo; após reiniciar o contêiner é necessário conectar novamente. Outra sessão administrativa pode encerrar a sessão do aplicativo. A detecção depende da lista online fornecida pelo gateway e não identifica conexões ocorridas entre verificações. Uma alteração de MAC pode ser tratada como um novo dispositivo.
+Cada hook possui referência de dispositivos e fila persistente próprias em `/data/labels.db`. Falhas de um destino não bloqueiam os outros. Até três mensagens pendentes por destino são tentadas por ciclo. Alterar um hook descarta mensagens pendentes da configuração anterior; mudar sua ativação estabelece uma nova referência sem alertas retroativos. Há possibilidade de duplicação se o serviço aceitar uma mensagem e a conexão/processo falhar antes de registrar a confirmação local.
+
+A primeira leitura registra os dispositivos conhecidos sem enviar alertas. O monitor consulta a cada 30 segundos e roda enquanto existir uma sessão válida com o gateway, inclusive com a página fechada. Após reiniciar o contêiner, conecte-se novamente. Conexões ocorridas entre leituras podem não ser detectadas. Links usam o endereço do último login e exigem acesso à rede e sessão no aplicativo.
+
+### Configuração dos serviços
+
+- **Discord:** URL de webhook do canal. [Documentação](https://discord.com/developers/docs/resources/webhook).
+- **Telegram:** token de bot criado com BotFather e chat ID (ou `@canal`). Inicie a conversa ou adicione o bot ao grupo/canal com permissão de envio. [Bot API](https://core.telegram.org/bots/api#sendmessage).
+- **WhatsApp:** conta Business Cloud API, token, Phone Number ID, destinatário com DDI, versão Graph API vigente na conta, nome e idioma de template aprovado. Esta integração usa exatamente um parâmetro posicional `{{1}}` no corpo, sem parâmetros em cabeçalho/botões. O texto do evento é normalizado para uma linha e limitado a 900 caracteres para esse parâmetro. Não há login por QR Code/WhatsApp pessoal. O teste usa o mesmo template e depende de permissões, aprovação, destinatário autorizado e condições da Meta. [Templates oficiais](https://whatsappbusiness.com/blog/manage-message-templates-whatsapp-business-api/).
+- **Slack:** URL de Incoming Webhook para o canal. [Documentação](https://docs.slack.dev/messaging/sending-messages-using-incoming-webhooks/).
+- **Webhook genérico:** endpoint HTTPS público na porta 443. Recebe JSON com `event`, `text` e `device`; redirecionamentos não são seguidos. Endereços privados/locais não são aceitos.
 
 O ícone para ZimaOS está disponível em `https://raw.githubusercontent.com/rafaels-santos/gateway-manager/master/static/icon.png`. Para uma instalação existente, use esse endereço no campo de ícone personalizado do aplicativo.
 
@@ -62,8 +72,8 @@ O formulário de login permite o preenchimento automático e tenta solicitar o a
 
 ### Webhooks de eventos
 
-Em Notificações, escolha Discord ou Webhook genérico. O formato genérico aceita um endpoint HTTPS público na porta 443 e envia `{"event":"ip_changed","text":"mensagem personalizada","device":{...}}`. Redirecionamentos não são seguidos. A URL salva não é devolvida ao navegador.
+Ao criar um hook, escolha o serviço desejado. O formato genérico aceita um endpoint HTTPS público na porta 443 e envia `{"event":"ip_changed","text":"mensagem personalizada","device":{...}}`. Redirecionamentos não são seguidos. A URL salva não é devolvida ao navegador.
 
 Cada evento tem ativação e texto independentes: novo MAC online, desconexão, mudança de IP e as duas últimas condições para clientes com regra de bloqueio. Somente novo dispositivo fica ativo por padrão. Se eventos gerais e específicos estiverem ativos, ambos serão enviados. Regras inativas são identificadas pelo campo `{block_active}`. Mudança de IP significa diferença da última leitura, não desvio de reserva DHCP. O monitor consulta a cada 30 segundos; não representa captura em tempo real. A primeira observação cria referência sem disparar eventos de transição.
 
-Variáveis: `{name}`, `{ip}`, `{previous_ip}`, `{mac}`, `{link}`, `{block_active}`, `{event}`. Mensagens aceitam até 1.500 caracteres. O botão de teste usa o endpoint e formato já salvos. Novos eventos dependem de uma sessão ativa com o gateway.
+Variáveis: `{name}`, `{ip}`, `{previous_ip}`, `{mac}`, `{link}`, `{block_active}`, `{event}`. Mensagens aceitam até 1.500 caracteres. O botão de teste usa as configurações já salvas do hook. Novos eventos dependem de uma sessão ativa com o gateway.

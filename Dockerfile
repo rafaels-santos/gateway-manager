@@ -1,6 +1,6 @@
 FROM python:3.12-alpine
 WORKDIR /app
-COPY app.py ./
+COPY app.py notifications.py ./
 COPY static ./static
 RUN adduser -D app && mkdir /data && chown app:app /data
 USER app

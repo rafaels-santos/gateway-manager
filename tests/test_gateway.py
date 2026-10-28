@@ -315,7 +315,7 @@ class GatewayTests(unittest.TestCase):
                 app.monitor_once(MonitorGateway()); send.assert_not_called()
                 devices.append({'mac':'aa:bb:cc:dd:ee:02','status':'online','hostname':'Phone','ip':'192.168.1.11','port':'SSID1'})
                 send.side_effect=GatewayError('Erro simulado')
-                with self.assertRaises(GatewayError): app.monitor_once(MonitorGateway())
+                self.assertIn('falha', app.monitor_once(MonitorGateway()))
                 send.side_effect=None
                 app.monitor_once(MonitorGateway())
                 app.monitor_once(MonitorGateway())
