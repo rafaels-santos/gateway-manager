@@ -14,16 +14,21 @@ function deviceIcon(kind) {
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true');
   const path=document.createElementNS('http://www.w3.org/2000/svg','path'); path.setAttribute('d',kind==='wifi' ? 'M3 8.5a14 14 0 0 1 18 0M6 12a9.5 9.5 0 0 1 12 0M9 15.5a5 5 0 0 1 6 0M12 19h.01' : 'M4 4h16v10H4zM9 18h6M12 14v4'); svg.append(path); return svg;
 }
-function setPage(page) {
+const pageLabels={devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP IPv4',dns:'DNS da LAN',wifi:'Redes e SSIDs',reboot:'Reinício',logs:'Logs',notifications:'Notificações'};
+function updateNavigation(page){
+  document.querySelectorAll('.nav-item').forEach(el=>{const active=el.dataset.page===page&&(page!=='devices'||(el.dataset.networkView||'online')===(deviceView==='blocked'?'blocked':'online'));el.classList.toggle('active',active);if(active)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
+  $('#breadcrumb').textContent=page==='devices'&&deviceView==='blocked'?'Bloqueios Wi-Fi':pageLabels[page];
+}
+function setPage(page,view='online') {
+  if(!Object.hasOwn(pageLabels,page))return;
   document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
-  document.addEventListener('click',event=>{document.querySelectorAll('.filter-menu[open]').forEach(menu=>{if(!menu.contains(event.target)) menu.open=false;});});
-document.addEventListener('keydown',event=>{if(event.key==='Escape') document.querySelectorAll('.filter-menu[open]').forEach(menu=>{menu.open=false;menu.querySelector('summary').focus();});});
-document.querySelectorAll('.nav-item').forEach(el=>{ const active=el.dataset.page===page; el.classList.toggle('active',active); if(active) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); });
-  $('#breadcrumb').textContent=({devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP',dns:'DNS',wifi:'Redes Wi-Fi',reboot:'Reinício',logs:'Logs',notifications:'Notificações'})[page];
+  if(page==='devices')selectDeviceView(view);else updateNavigation(page);
   if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi(); else if(page==='logs') loadLogs();
 }
-document.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page)));
-function selectDeviceView(view){ deviceView=view; for(const state of ['online','offline','blocked']){ const active=state===view; $(`#show-${state}`).classList.toggle('active',active); $(`#show-${state}`).setAttribute('aria-pressed',String(active)); } document.querySelectorAll('[data-device-view]').forEach(panel=>panel.hidden=panel.dataset.deviceView!==view); }
+document.addEventListener('click',event=>{document.querySelectorAll('.filter-menu[open]').forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});});
+document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.filter-menu[open]').forEach(menu=>{menu.open=false;menu.querySelector('summary').focus();});});
+document.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page,el.dataset.networkView||'online')));
+function selectDeviceView(view){ deviceView=view; if(!$('#page-devices').hidden)updateNavigation('devices'); for(const state of ['online','offline','blocked']){ const active=state===view; $(`#show-${state}`).classList.toggle('active',active); $(`#show-${state}`).setAttribute('aria-pressed',String(active)); } document.querySelectorAll('[data-device-view]').forEach(panel=>panel.hidden=panel.dataset.deviceView!==view); }
 $('#show-online').addEventListener('click',()=>selectDeviceView('online'));
 $('#show-offline').addEventListener('click',()=>selectDeviceView('offline'));
 $('#show-blocked').addEventListener('click',()=>selectDeviceView('blocked'));

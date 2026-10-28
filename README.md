@@ -86,3 +86,9 @@ Ao preencher um IP, o app consulta a página inicial do gateway com GET e uma se
 Firmware pode não ser divulgado antes de autenticar. No Huawei, após login, o app tenta ler SWVer/HWVer do cabeçalho de User Logs e exibe o firmware junto ao modelo no painel. Se essa leitura não estiver disponível, a conexão continua sem uma versão presumida. A detecção limita tempo e redirecionamentos e aceita somente os mesmos IPs privados permitidos no login. Um novo adaptador pode declarar seus nomes exatos de identificação pública em `detection_models`.
 
 O login usa um cartão compacto de gateway: clique no modelo para abrir o painel do IP em nova aba; clique no IP/lápis para editar o endereço dentro do cartão. Aplicar ou Enter confirma; Cancelar ou Esc preserva o endereço anterior. A seleção manual fica recolhida. O ícone Huawei fornecido pelo usuário é servido localmente em `/huawei.png`, com crédito a [Icons8](https://icons8.com/).
+
+## Evolução da rede interna
+
+O [plano de gerenciamento da rede interna](PLANO-GERENCIAMENTO-REDE-INTERNA.md) registra a inspeção de leitura do EG8145X6-10, as capacidades observadas e a expansão em fases. A navegação está agrupada em Rede interna, Wi-Fi, LAN e IPs, Segurança, Monitoramento e Manutenção. Bloqueios Wi-Fi abre a listagem de bloqueados existente. PPPoE, WAN e conexões externas não fazem parte do escopo de expansão.
+
+Teste de navegação: `node --test tests/navigation.test.cjs`.
