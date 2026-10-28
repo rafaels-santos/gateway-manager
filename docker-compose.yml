@@ -1,7 +1,6 @@
 services:
   gateway-manager:
-    build:
-      context: https://github.com/rafaels-santos/gateway-manager.git#master
+    image: ghcr.io/rafaels-santos/gateway-manager:latest
     ports:
       - "8080:8080"
     restart: unless-stopped
