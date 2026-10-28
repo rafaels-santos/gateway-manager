@@ -38,6 +38,7 @@ def labels():
     db.execute('CREATE TABLE IF NOT EXISTS webhook_config (gateway TEXT PRIMARY KEY, url TEXT NOT NULL, enabled INTEGER NOT NULL, baseline INTEGER NOT NULL DEFAULT 0)')
     db.execute('CREATE TABLE IF NOT EXISTS seen_devices (gateway TEXT NOT NULL, mac TEXT NOT NULL, PRIMARY KEY (gateway, mac))')
     db.execute('CREATE TABLE IF NOT EXISTS app_origins (gateway TEXT PRIMARY KEY, origin TEXT NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS device_tags (gateway TEXT NOT NULL, mac TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (gateway, mac))')
     try:
         if os.name != 'nt': os.chmod(DATA_DIR / 'labels.db', 0o600)
         with db:
@@ -471,7 +472,10 @@ class Handler(BaseHTTPRequestHandler):
                         reservations_available = False
                 with labels() as db:
                     saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
-                for row in rows: row['name'] = saved.get(row['mac'], '')
+                    tags = dict(db.execute('SELECT mac,tag FROM device_tags WHERE gateway=?', (gateway.base,)))
+                for row in rows:
+                    row['name'] = saved.get(row['mac'], '')
+                    row['tag'] = tags.get(row['mac'], '')
                 self.send_json(200, {'devices': rows, 'reservations_available': reservations_available})
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
@@ -546,6 +550,18 @@ class Handler(BaseHTTPRequestHandler):
                     row = db.execute('SELECT url FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
                 if not row: raise GatewayError('Salve a URL do webhook antes de testar.')
                 send_discord(row[0])
+                self.send_json(200, {'ok': True})
+            elif self.path == '/api/tag':
+                gw = self.session()
+                mac = str(body.get('mac', '')).lower().strip()
+                tag = str(body.get('tag', '')).strip()
+                if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac) or tag not in ('', 'IoT', 'Celulares', 'Computadores', 'Rede'):
+                    raise GatewayError('Categoria ou MAC inválido.')
+                with labels() as db:
+                    if tag:
+                        db.execute('INSERT INTO device_tags (gateway,mac,tag) VALUES (?,?,?) ON CONFLICT(gateway,mac) DO UPDATE SET tag=excluded.tag', (gw.base, mac, tag))
+                    else:
+                        db.execute('DELETE FROM device_tags WHERE gateway=? AND mac=?', (gw.base, mac))
                 self.send_json(200, {'ok': True})
             elif self.path == '/api/name':
                 gw = self.session()

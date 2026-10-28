@@ -20,6 +20,27 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_device_tag_persists_and_can_be_removed(self):
+        import io, json
+        from pathlib import Path
+        class Session:
+            base = 'http://192.168.1.1'
+        with tempfile.TemporaryDirectory(dir='.') as tmp, patch.object(app, 'DATA_DIR', Path(tmp)):
+            def submit(tag):
+                payload = json.dumps({'mac':'aa:bb:cc:dd:ee:ff','tag':tag}).encode()
+                h = app.Handler.__new__(app.Handler)
+                h.path = '/api/tag'; h.headers = {'Origin':'http://localhost','Host':'localhost','Content-Type':'application/json','Content-Length':str(len(payload))}
+                h.rfile = io.BytesIO(payload); h.session = lambda: Session()
+                with patch.object(h, 'send_json') as send:
+                    h.do_POST()
+                return send.call_args.args[0]
+            self.assertEqual(submit('IoT'), 200)
+            with app.labels() as db:
+                self.assertEqual(db.execute('SELECT tag FROM device_tags').fetchone()[0], 'IoT')
+            self.assertEqual(submit('inexistente'), 400)
+            self.assertEqual(submit(''), 200)
+            with app.labels() as db:
+                self.assertEqual(db.execute('SELECT count(*) FROM device_tags').fetchone()[0], 0)
     def test_fixed_ip_requires_matching_mac_and_ip(self):
         devices = [{'mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.1.10','ip_type':'DHCP'}, {'mac':'aa:bb:cc:dd:ee:01','ip':'192.168.1.11','ip_type':'Static'}]
         app.mark_fixed_addresses(devices, [{'mac':'AA:BB:CC:DD:EE:FF','ip':'192.168.1.20'}])
