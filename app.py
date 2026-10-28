@@ -271,6 +271,21 @@ def stop_monitor(gw):
         if entry and entry['gateway'] is gw:
             entry['stop'].set(); entry['wake'].set(); MONITORS.pop(gw.base, None)
 
+def enrich_reservations(rows, devices, names):
+    by_mac = {}
+    for device in devices:
+        mac = device.get('mac', '').lower()
+        previous = by_mac.get(mac)
+        if not previous or (device.get('status') == 'online' and previous.get('status') != 'online'):
+            by_mac[mac] = device
+    for row in rows:
+        mac = row['mac'].lower()
+        device = by_mac.get(mac, {})
+        row['name'] = names.get(mac, '')
+        row['hostname'] = device.get('hostname', '')
+        row['gateway_name'] = device.get('gateway_name', '')
+    return rows
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         # Do not log form data, gateway addresses, or credentials.
@@ -309,12 +324,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/api/reservations':
             try:
                 gateway = self.session()
-                with gateway.lock: rows, _ = gateway.reservations()
-                
+                with gateway.lock:
+                    rows, _ = gateway.reservations()
+                    try:
+                        devices = gateway.devices()
+                        names_unavailable = False
+                    except GatewayError:
+                        devices = []
+                        names_unavailable = True
                 with labels() as db:
                     saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
-                for row in rows: row['name'] = saved.get(row['mac'], '')
-                self.send_json(200, {'reservations': rows})
+                self.send_json(200, {'reservations': enrich_reservations(rows, devices, saved), 'device_names_unavailable': names_unavailable})
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
         files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css')}

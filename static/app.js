@@ -21,11 +21,11 @@ function setPage(page) {
 }
 document.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page)));
 async function refreshDevices() {
-  if (loadingDevices || $('#dashboard').hidden || document.activeElement?.matches('.device-name-input')) return;
+  if (loadingDevices || $('#dashboard').hidden || document.querySelector('.name-form.is-editing')) return;
   loadingDevices=true;
   try {
     const data=await api('/api/devices');
-    if(document.activeElement?.matches('.device-name-input')) return;
+    if(document.querySelector('.name-form.is-editing')) return;
     const online=data.devices.filter(d=>d.status==='online');
     const lan=online.filter(d=>d.type==='lan'), wifi=online.filter(d=>d.type==='wifi');
     $('#total-count').textContent=online.length; $('#wifi-count').textContent=wifi.length; $('#lan-count').textContent=lan.length;
@@ -38,8 +38,21 @@ async function refreshDevices() {
         const row=node('div','device-row'); const identity=node('div','device-identity'); const icon=node('span','device-icon'); icon.append(deviceIcon(d.type));
         const info=node('div'); info.append(node('strong','',d.gateway_name || d.hostname || 'Dispositivo sem nome'),node('small','muted',`${d.port || '—'} · Online`)); identity.append(icon,info);
         const network=node('div','network'); network.append(node('span','',d.ip || 'Sem IP'),node('small','muted',d.mac));
-        const form=node('form','name-form'); const label=node('label','sr-only',`Identificador de ${d.hostname || d.mac}`); const input=node('input','device-name-input'); input.value=d.name; input.placeholder='Adicionar identificador'; input.maxLength=80; const save=node('button','secondary','Salvar'); save.type='submit';
-        form.append(label,input,save); form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;try{await api('/api/name',{mac:d.mac,name:input.value}); input.blur();message('Identificador salvo neste aplicativo.');}catch(err){message(err.message,true)}finally{save.disabled=false}});
+        const form=node('form','name-form');
+        const display=node('div','name-display');
+        const caption=node('span','identifier-label','Identificador');
+        const current=node('strong','identifier-value',d.name || 'Não definido');
+        display.append(caption,current);
+        const edit=node('button','identifier-edit',d.name ? 'Editar' : '+ Adicionar'); edit.type='button'; edit.setAttribute('aria-label',`Editar identificador de ${d.hostname || d.mac}`);
+        const input=node('input','device-name-input'); input.value=d.name; input.placeholder='Nome do identificador'; input.maxLength=80; input.setAttribute('aria-label',`Identificador de ${d.hostname || d.mac}`); input.hidden=true;
+        const save=node('button','secondary','Salvar'); save.type='submit'; save.hidden=true;
+        const cancel=node('button','identifier-edit','Cancelar'); cancel.type='button'; cancel.hidden=true;
+        function leaveEdit() { form.classList.remove('is-editing'); display.hidden=false; edit.hidden=false; input.hidden=true; save.hidden=true; cancel.hidden=true; }
+        edit.addEventListener('click',()=>{ form.classList.add('is-editing'); display.hidden=true; edit.hidden=true; input.hidden=false; save.hidden=false; cancel.hidden=false; input.value=d.name; input.focus(); });
+        cancel.addEventListener('click',()=>{leaveEdit();refreshDevices()});
+        input.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();leaveEdit();refreshDevices()}});
+        form.append(display,edit,input,save,cancel);
+        form.addEventListener('submit',async e=>{e.preventDefault();save.disabled=true;try{await api('/api/name',{mac:d.mac,name:input.value});d.name=input.value.trim();leaveEdit();message('Identificador salvo para todas as abas.');await refreshDevices();}catch(err){message(err.message,true)}finally{save.disabled=false}});
         row.append(identity,network,form); panel.append(row);
       }); target.append(panel);
     }
@@ -50,8 +63,9 @@ async function refreshDevices() {
 function resetForm(){ $('#reservation').reset();$('#reservation-id').value='';$('#form-title').textContent='Nova reserva'; }
 async function refreshReservations(){
   const data=await api('/api/reservations');reservations=data.reservations;const list=$('#list');list.replaceChildren();
+  if(data.device_names_unavailable) list.append(node('p','notice','Não foi possível carregar os nomes do gateway; os identificadores locais continuam disponíveis.'));
   if(!reservations.length){list.append(node('p','empty','Nenhuma reserva encontrada.'));return;}
-  reservations.forEach(row=>{const card=node('div','reservation-row');const info=node('div');info.append(node('strong','',row.name||'Sem identificador'),node('small','muted',`${row.mac} · ${row.ip}`));const edit=node('button','secondary','Editar');edit.type='button';edit.addEventListener('click',()=>{$('#reservation-id').value=row.id;$('#mac').value=row.mac;$('#ip').value=row.ip;$('#name').value=row.name;$('#form-title').textContent='Editar reserva';$('#mac').focus()});card.append(info,edit);list.append(card)});
+  reservations.forEach(row=>{const card=node('div','reservation-row');const info=node('div');info.append(node('strong','',row.gateway_name||row.hostname||'Dispositivo sem nome'),node('small','muted',`${row.mac} · ${row.ip}`),node('small','muted',`Identificador: ${row.name||'Não definido'}`));const edit=node('button','secondary','Editar');edit.type='button';edit.addEventListener('click',()=>{$('#reservation-id').value=row.id;$('#mac').value=row.mac;$('#ip').value=row.ip;$('#name').value=row.name;$('#form-title').textContent='Editar reserva';$('#mac').focus()});card.append(info,edit);list.append(card)});
 }
 $('#connect').addEventListener('submit',async e=>{e.preventDefault();message('Conectando...');try{await api('/api/login',{address:$('#address').value,username:$('#username').value,password:$('#password').value});$('#password').value='';$('#login-screen').hidden=true;$('#dashboard').hidden=false;message('Conectado.');await refreshDevices();clearInterval(deviceTimer);deviceTimer=setInterval(()=>{if(!document.hidden)refreshDevices()},15000)}catch(err){$('#password').value='';message(err.message,true)}});
 $('#reservation').addEventListener('submit',async e=>{e.preventDefault();message('Salvando reserva...');try{const mac=$('#mac').value.trim().toLowerCase(),id=$('#reservation-id').value,ip=$('#ip').value.trim();const old=reservations.find(row=>row.id===id);if(!old||old.mac!==mac||old.ip!==ip)await api('/api/reservation',{id,mac,ip});try{await api('/api/name',{mac,name:$('#name').value})}catch(err){message('Reserva salva, mas o identificador não foi salvo: '+err.message,true);await refreshReservations();return}resetForm();await refreshReservations();message('Dados salvos.')}catch(err){message(err.message,true)}});

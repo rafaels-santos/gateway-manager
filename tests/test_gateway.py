@@ -80,6 +80,14 @@ class GatewayTests(unittest.TestCase):
                 app.monitor_once(MonitorGateway())
                 app.monitor_once(MonitorGateway())
                 self.assertEqual(send.call_count,2)
+    def test_reservations_show_gateway_names_and_shared_labels_by_mac(self):
+        reservations = [{'mac': 'AA:BB:CC:DD:EE:FF', 'ip': '192.168.1.10'}]
+        devices = [{'mac':'aa:bb:cc:dd:ee:ff','hostname':'Notebook','gateway_name':'Escritório','status':'online'}]
+        result = app.enrich_reservations(reservations, devices, {'aa:bb:cc:dd:ee:ff':'Trabalho'})
+        self.assertEqual((result[0]['hostname'], result[0]['gateway_name'], result[0]['name']), ('Notebook','Escritório','Trabalho'))
+    def test_reservations_keep_local_labels_without_device_data(self):
+        result = app.enrich_reservations([{'mac':'aa:bb:cc:dd:ee:ff'}], [], {'aa:bb:cc:dd:ee:ff':'Sala'})
+        self.assertEqual((result[0]['hostname'],result[0]['name']), ('','Sala'))
     def test_public_address_rejected(self):
         with self.assertRaises(GatewayError): Gateway('8.8.8.8')
 
