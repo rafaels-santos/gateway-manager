@@ -20,6 +20,15 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_device_deep_link_serves_app(self):
+        import io
+        handler = app.Handler.__new__(app.Handler)
+        handler.path = '/?device=aa%3Abb%3Acc%3Add%3Aee%3Aff'
+        handler.wfile = io.BytesIO()
+        with patch.object(handler, 'send_response') as response, patch.object(handler, 'send_header'), patch.object(handler, 'end_headers'):
+            handler.do_GET()
+        response.assert_called_once_with(200)
+        self.assertIn(b'device-dialog', handler.wfile.getvalue())
     def test_parse_encoded_values(self):
         rows, _ = FakeGateway().reservations()
         self.assertEqual(rows, [{'id': DOMAIN + '.1', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.100.100'}])
