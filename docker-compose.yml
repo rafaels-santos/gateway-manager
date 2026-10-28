@@ -8,3 +8,5 @@ services:
     restart: unless-stopped
 volumes:
   gateway-manager-data:
+x-casaos:
+  icon: https://raw.githubusercontent.com/rafaels-santos/gateway-manager/master/static/icon.png

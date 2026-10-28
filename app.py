@@ -337,10 +337,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {'reservations': enrich_reservations(rows, devices, saved), 'device_names_unavailable': names_unavailable})
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
-        files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css')}
+        files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'), '/icon.png': ('icon.png', 'image/png')}
         if self.path not in files: self.send_error(404); return
         name, mime = files[self.path]; data = (STATIC / name).read_bytes()
-        self.send_response(200); self.send_header('Content-Type', mime + '; charset=utf-8'); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+        self.send_response(200); self.send_header('Content-Type', mime if mime == 'image/png' else mime + '; charset=utf-8'); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_POST(self):
         try:
             origin = self.headers.get('Origin', '')
