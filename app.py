@@ -1,5 +1,6 @@
 import base64
 import http.cookiejar
+import http.client
 import ipaddress
 import json
 import re
@@ -77,23 +78,39 @@ class Gateway:
             raise GatewayError('Não foi possível acessar o gateway: %s' % e)
 
     def login(self, user, password):
+        # This Huawei firmware ties the one-time token to the TCP connection.
+        # Keep the token and login requests on one connection.
         with self.lock:
             page = self.request('/')
             if 'EG8145X6' not in page:
                 raise GatewayError('O gateway não foi identificado como Huawei EG8145X6.')
-            # The gateway login page creates this language cookie before submitting.
-            cookie = http.cookiejar.Cookie(version=0, name='Cookie', value='body:Language:english:id=-1', port=None, port_specified=False, domain=urllib.parse.urlsplit(self.base).hostname, domain_specified=False, domain_initial_dot=False, path='/', path_specified=True, secure=False, expires=None, discard=True, comment=None, comment_url=None, rest={}, rfc2109=False)
-            self.cookies.set_cookie(cookie)
-            token = self.request('/asp/GetRandCount.asp', {}, xhr=True).strip()
-            if not token or len(token) > 256:
-                raise GatewayError('O gateway não retornou um token de login válido.')
-            result = self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
-            # Emit structural markers only: never print response text, tokens or credentials.
-            markers = ('document.cookie', 'location', 'window.name', 'Set-Cookie', 'login', 'error', 'fail', 'script', 'iframe', 'refresh', 'redirect', 'waiting', 'pagename', 'index.asp', 'login.asp')
-            destinations = re.findall(r"(?:pageName|location(?:\.href)?)\s*=\s*['\"](/(?:index\.asp|login\.asp)?)['\"]", result, re.I)
-            print('Diagnóstico da resposta: tamanho=%d; marcadores=%s; destino=%s' % (len(result), ','.join(m for m in markers if m.lower() in result.lower()) or 'nenhum', ','.join(destinations) or 'nenhum'), flush=True)
-            fail = re.search(r"(?:var\s+)?FailStat\s*=\s*['\"](\d+)['\"]", result)
-            print('Diagnóstico de login: página de login=%s; FailStat=%s; cookies=%s' % ('txt_Password' in result, fail.group(1) if fail else 'ausente', ','.join(c.name for c in self.cookies) or 'nenhum'), flush=True)
+            parsed = urllib.parse.urlsplit(self.base)
+            conn_class = http.client.HTTPSConnection if parsed.scheme == 'https' else http.client.HTTPConnection
+            conn = conn_class(parsed.hostname, parsed.port, timeout=12)
+            headers = {'User-Agent': 'Mozilla/5.0', 'Referer': self.base + '/', 'Origin': self.base, 'Content-Type': 'application/x-www-form-urlencoded'}
+            try:
+                conn.request('POST', '/asp/GetRandCount.asp', body=b'', headers={**headers, 'X-Requested-With': 'XMLHttpRequest'})
+                response = conn.getresponse()
+                token = response.read(1024).decode('utf-8-sig', errors='replace').strip()
+                if response.status != 200 or not re.fullmatch(r'[0-9a-fA-F]{64}', token):
+                    raise GatewayError('O gateway não retornou um token de login válido.')
+                payload = urllib.parse.urlencode({'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token}).encode()
+                login_headers = {**headers, 'Cookie': 'Cookie=body:Language:english:id=-1'}
+                conn.request('POST', '/login.cgi', body=payload, headers=login_headers)
+                response = conn.getresponse()
+                response.read(2_000_000)
+                from http.cookies import SimpleCookie
+                cookies = SimpleCookie()
+                for header in response.headers.get_all('Set-Cookie', []):
+                    cookies.load(header)
+                if response.status not in (200, 302, 303) or 'Cookie' not in cookies or not cookies['Cookie'].value.startswith('sid='):
+                    raise GatewayError('Login não confirmado pelo gateway. Verifique o usuário e a senha ou se a conta está bloqueada.')
+                cookie = http.cookiejar.Cookie(version=0, name='Cookie', value=cookies['Cookie'].value, port=None, port_specified=False, domain=parsed.hostname, domain_specified=False, domain_initial_dot=False, path='/', path_specified=True, secure=parsed.scheme == 'https', expires=None, discard=True, comment=None, comment_url=None, rest={}, rfc2109=False)
+                self.cookies.set_cookie(cookie)
+            except (OSError, http.client.HTTPException, UnicodeError) as e:
+                raise GatewayError('Falha na comunicação de login com o gateway: %s' % e)
+            finally:
+                conn.close()
             page = self.request('/index.asp')
             if not re.search(r'logout', page, re.I):
                 raise GatewayError('Login não confirmado. Verifique usuário, senha e permissões.')
