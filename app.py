@@ -1,5 +1,197 @@
-from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import base64
+import http.cookiejar
+import ipaddress
+import json
+import re
+import secrets
+import sqlite3
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 import os
 
-os.chdir(os.path.join(os.path.dirname(__file__), 'static'))
-ThreadingHTTPServer(('0.0.0.0', int(os.environ.get('PORT', '8080'))), SimpleHTTPRequestHandler).serve_forever()
+ROOT = Path(__file__).parent
+STATIC = ROOT / 'static'
+SESSIONS = {}
+LOCK = threading.Lock()
+PATH = '/html/bbsp/dhcpstatic/dhcpstatic.asp'
+DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress'
+DATA_DIR = Path(os.environ.get('DATA_DIR', str(ROOT / 'data')))
+
+def labels():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(DATA_DIR / 'labels.db')
+    db.execute('CREATE TABLE IF NOT EXISTS labels (gateway TEXT, mac TEXT, name TEXT, PRIMARY KEY (gateway, mac))')
+    return db
+
+class GatewayError(Exception):
+    pass
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+class Gateway:
+    def __init__(self, address):
+        address = address.strip()
+        if '://' not in address:
+            address = 'http://' + address
+        parsed = urllib.parse.urlsplit(address)
+        try:
+            ip = ipaddress.ip_address(parsed.hostname or '')
+            port = parsed.port
+        except ValueError:
+            raise GatewayError('Informe um endereço IP válido do gateway.')
+        if parsed.scheme not in ('http', 'https') or not ip.is_private or ip.is_loopback or ip.is_link_local or parsed.username or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
+            raise GatewayError('Informe o IP privado do gateway, opcionalmente com http:// ou https:// e porta.')
+        self.base = '%s://%s%s' % (parsed.scheme, ('[' + str(ip) + ']') if ip.version == 6 else str(ip), ':' + str(port) if port else '')
+        self.cookies = http.cookiejar.CookieJar()
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies), NoRedirect())
+        self.lock = threading.RLock()
+
+    def request(self, path, data=None):
+        payload = None if data is None else urllib.parse.urlencode(data).encode('utf-8')
+        req = urllib.request.Request(self.base + path, data=payload, headers={'User-Agent': 'GatewayManager/1.0', 'Referer': self.base + '/', 'Accept': 'text/html,*/*'})
+        try:
+            with self.opener.open(req, timeout=12) as response:
+                return response.read(2_000_000).decode('utf-8', errors='replace')
+        except urllib.error.HTTPError as e:
+            if e.code in (301, 302, 303) and e.headers.get('Location', '').startswith('/'):
+                return self.request(e.headers['Location'])
+            raise GatewayError('Gateway recusou a requisição (HTTP %s).' % e.code)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise GatewayError('Não foi possível acessar o gateway: %s' % e)
+
+    def login(self, user, password):
+        with self.lock:
+            page = self.request('/')
+            if 'EG8145X6' not in page:
+                raise GatewayError('O gateway não foi identificado como Huawei EG8145X6.')
+            token = self.request('/asp/GetRandCount.asp', {}).strip()
+            if not token or len(token) > 256:
+                raise GatewayError('O gateway não retornou um token de login válido.')
+            self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
+            page = self.request('/index.asp')
+            if not re.search(r'logout', page, re.I):
+                raise GatewayError('Login não confirmado. Verifique usuário, senha e permissões.')
+
+    def reservations_page(self):
+        page = self.request(PATH)
+        if 'DHCPStaticAddress' not in page or 'onttoken' not in page:
+            raise GatewayError('Sessão expirada ou tela de reservas indisponível para esta conta.')
+        return page
+
+    def reservations(self):
+        page = self.reservations_page()
+        # Firmware serializes reservations as constructors in JavaScript.
+        rows = []
+        pattern = r'new\s+stDhcp\s*\(\s*"(InternetGatewayDevice\.LANDevice\.1\.LANHostConfigManagement\.DHCPStaticAddress\.\d+)"\s*,\s*"[01]"\s*,\s*"([^"\n]*)"\s*,\s*"([^"\n]*)"'
+        def decode(value):
+            return re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), value)
+        for domain, raw_ip, raw_mac in re.findall(pattern, page, re.I):
+            mac, ip = decode(raw_mac).lower(), decode(raw_ip)
+            if re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
+                try:
+                    ipaddress.IPv4Address(ip)
+                except ValueError:
+                    raise GatewayError('O gateway retornou um IP inválido.')
+                rows.append({'id': domain, 'mac': mac, 'ip': ip})
+        if not rows and re.search(r'DHCPStaticAddress\.\d+', page):
+            raise GatewayError('Formato de reservas não reconhecido; nenhuma alteração foi feita.')
+        return rows, page
+
+    def save(self, body):
+        with self.lock:
+            try:
+                ip = str(ipaddress.IPv4Address(body.get('ip', '')))
+            except ValueError:
+                raise GatewayError('Informe um IPv4 válido.')
+            mac = str(body.get('mac', '')).lower().strip()
+            if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
+                raise GatewayError('Informe um MAC válido, por exemplo aa:bb:cc:dd:ee:ff.')
+            rows, page = self.reservations()
+            domain = body.get('id', '')
+            if domain and domain not in [r['id'] for r in rows]:
+                raise GatewayError('Reserva não encontrada; atualize a lista.')
+            if any(r['id'] != domain and (r['ip'] == ip or r['mac'] == mac) for r in rows):
+                raise GatewayError('Este IP ou MAC já está reservado.')
+            token = self.request('/html/ssmp/common/GetRandToken.asp', {}).strip()
+            if not re.fullmatch(r'[a-zA-Z0-9]{16,256}', token):
+                raise GatewayError('Token de operação indisponível; nenhuma alteração foi feita.')
+            action = 'set.cgi' if domain else 'add.cgi'
+            target = domain or DOMAIN
+            url = '/' + action + '?' + urllib.parse.urlencode({'x': target, 'RequestFile': PATH.lstrip('/')})
+            self.request(url, {'x.Yiaddr': ip, 'x.Chaddr': mac, **({'x.Enable': '1'} if not domain else {}), 'x.X_HW_Token': token})
+            updated, _ = self.reservations()
+            if not any(r['ip'] == ip and r['mac'] == mac for r in updated):
+                raise GatewayError('O gateway não confirmou a reserva. Verifique a interface original antes de tentar novamente.')
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        # Do not log form data, gateway addresses, or credentials.
+        print('HTTP request handled', flush=True)
+    def send_json(self, status, obj, cookie=None):
+        data = json.dumps(obj, ensure_ascii=False).encode()
+        self.send_response(status); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.send_header('Cache-Control', 'no-store')
+        if cookie is not None: self.send_header('Set-Cookie', 'session=' + cookie + '; HttpOnly; SameSite=Strict; Path=/')
+        self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+    def session(self):
+        from http.cookies import SimpleCookie
+        c = SimpleCookie(); c.load(self.headers.get('Cookie', ''))
+        with LOCK: s = SESSIONS.get(c['session'].value if 'session' in c else '')
+        if not s: raise GatewayError('Conecte-se ao gateway novamente.')
+        return s
+    def do_GET(self):
+        if self.path == '/api/reservations':
+            try:
+                gateway = self.session()
+                with gateway.lock: rows, _ = gateway.reservations()
+                
+                with labels() as db:
+                    saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
+                for row in rows: row['name'] = saved.get(row['mac'], '')
+                self.send_json(200, {'reservations': rows})
+            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            return
+        files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css')}
+        if self.path not in files: self.send_error(404); return
+        name, mime = files[self.path]; data = (STATIC / name).read_bytes()
+        self.send_response(200); self.send_header('Content-Type', mime + '; charset=utf-8'); self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+    def do_POST(self):
+        try:
+            origin = self.headers.get('Origin', '')
+            if not origin or urllib.parse.urlsplit(origin).netloc != self.headers.get('Host') or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                raise GatewayError('Origem inválida.')
+            length = int(self.headers.get('Content-Length', '0'))
+            if length <= 0 or length > 8192: raise GatewayError('Requisição inválida.')
+            body = json.loads(self.rfile.read(length))
+            if self.path == '/api/login':
+                gw = Gateway(body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
+                with gw.lock: gw.reservations()
+                key = secrets.token_urlsafe(32)
+                with LOCK: SESSIONS[key] = gw
+                self.send_json(200, {'ok': True}, key)
+            elif self.path == '/api/reservation':
+                self.session().save(body); self.send_json(200, {'ok': True})
+            elif self.path == '/api/name':
+                gw = self.session()
+                mac = str(body.get('mac', '')).lower().strip()
+                name = str(body.get('name', '')).strip()
+                if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac) or len(name) > 80:
+                    raise GatewayError('Nome ou MAC inválido.')
+                with labels() as db:
+                    db.execute('INSERT INTO labels (gateway,mac,name) VALUES (?,?,?) ON CONFLICT(gateway,mac) DO UPDATE SET name=excluded.name', (gw.base, mac, name))
+                self.send_json(200, {'ok': True})
+            elif self.path == '/api/logout':
+                from http.cookies import SimpleCookie
+                c = SimpleCookie(); c.load(self.headers.get('Cookie', ''))
+                with LOCK: SESSIONS.pop(c['session'].value if 'session' in c else '', None)
+                self.send_json(200, {'ok': True}, '')
+            else: self.send_error(404)
+        except (GatewayError, ValueError, TypeError, KeyError) as e: self.send_json(400, {'error': str(e)})
+
+if __name__ == '__main__':
+    ThreadingHTTPServer(('0.0.0.0', int(os.environ.get('PORT', '8080'))), Handler).serve_forever()

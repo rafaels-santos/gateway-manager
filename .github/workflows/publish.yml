@@ -10,7 +10,42 @@ permissions:
   packages: write
 
 jobs:
+  test:
+    strategy:
+      matrix:
+        platform: [amd64, arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -v
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.platform }}
+          load: true
+          tags: gateway-manager:smoke
+      - name: Start and verify container
+        shell: bash
+        run: |
+          set -eu
+          docker volume create gateway-manager-test
+          docker run -d --name gateway-manager-test --platform linux/${{ matrix.platform }} -p 127.0.0.1:18080:8080 -v gateway-manager-test:/data gateway-manager:smoke
+          trap 'docker logs gateway-manager-test; docker rm -f gateway-manager-test; docker volume rm gateway-manager-test' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18080/ -o /tmp/gateway-home; then break; fi
+            sleep 1
+          done
+          grep -q 'Gateway Manager' /tmp/gateway-home
+          curl --fail --silent http://127.0.0.1:18080/app.js -o /dev/null
+          docker exec gateway-manager-test python -c "from pathlib import Path; p=Path('/data/smoke'); p.write_text('ok'); p.unlink()"
+          test "$(docker inspect -f '{{.State.Running}}' gateway-manager-test)" = true
   publish:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

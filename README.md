@@ -1,10 +1,12 @@
 # Gateway Manager
 
-Protótipo da tela inicial para gateway router. 
+Aplicativo para reservas DHCP no Huawei EG8145X6-10 (firmware V5R024C10S106). A integração de escrita é experimental: os formatos foram inspecionados no firmware e exercitados com gateway simulado, sem modificar o equipamento real. Confirme o resultado no painel do Huawei ao utilizar. A criação e edição de reservas são confirmadas por releitura; exclusão de reservas ainda não está implementada.
 
-## Instalar no ZimaOS remoto
+Os nomes são etiquetas persistidas **somente neste aplicativo**, associadas ao MAC de uma reserva; não renomeiam o cliente no gateway nem no dispositivo. A listagem de todos os dispositivos Wi-Fi e a alteração do nome no Huawei ainda não estão implementadas. DHCP geral e DNS também não estão implementados.
 
-Após a conclusão bem-sucedida do workflow **Publish container** no GitHub, use o nome de imagem `ghcr.io/rafaels-santos/gateway-manager:latest` ou crie um aplicativo Docker Compose com:
+## Executar no ZimaOS
+
+Use o Compose abaixo após o workflow de publicação no GitHub terminar com sucesso. Para atualizar uma instalação existente, baixe novamente a imagem e recrie o contêiner: `docker compose pull` e `docker compose up -d`.
 
 ```yaml
 services:
@@ -12,11 +14,17 @@ services:
     image: ghcr.io/rafaels-santos/gateway-manager:latest
     ports:
       - "8080:8080"
+    volumes:
+      - gateway-manager-data:/data
     restart: unless-stopped
+volumes:
+  gateway-manager-data:
 ```
 
-A imagem é publicada no GitHub Container Registry para `linux/amd64` e `linux/arm64`. O servidor precisa ter acesso ao `ghcr.io`. Se o pacote for privado, será necessário torná-lo público nas configurações do pacote no GitHub ou autenticar o Docker no GHCR com uma conta autorizada. A visibilidade do repositório não garante a visibilidade do pacote.
+Acesse `http://IP_DO_ZIMAOS:8080`. O volume conserva os nomes; a sessão e as credenciais não são salvas nele. Uma nova conexão pode encerrar a sessão de administração existente no gateway.
 
-Acesse `http://IP_DO_ZIMAOS:8080`. Para atualizar pelo terminal, use `docker compose pull` seguido de `docker compose up -d`. A porta 8080 pode ser alterada no lado esquerdo do mapeamento.
+O firmware pode usar HTTP para o login: Base64 não é criptografia. Use o aplicativo e o gateway apenas em rede confiável, e não exponha a porta do aplicativo diretamente à Internet. O ZimaOS precisa alcançar o IP privado do gateway.
 
-A página permite abrir a interface original do gateway. Para implementar a integração é necessário inspecionar as telas autenticadas e as requisições do firmware, sem compartilhar senhas ou cookies.
+Testes locais: `python -m unittest discover -s tests -v`.
+
+Caso o contêiner não inicie, consulte `docker compose logs gateway-manager` e verifique se a porta 8080 está disponível. Para mudar a porta externa, substitua `8080:8080` por `8081:8080`.

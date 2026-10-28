@@ -3,4 +3,8 @@ services:
     image: ghcr.io/rafaels-santos/gateway-manager:latest
     ports:
       - "8080:8080"
+    volumes:
+      - gateway-manager-data:/data
     restart: unless-stopped
+volumes:
+  gateway-manager-data:
