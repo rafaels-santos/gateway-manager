@@ -52,6 +52,38 @@ class GatewayTests(unittest.TestCase):
     def test_device_list_rejects_session_error(self):
         gw = FakeGateway(); gw.request = lambda path: '<html>login</html>'
         with self.assertRaises(GatewayError): gw.devices()
+    def test_devices_deduplicated_by_mac_preferring_online(self):
+        def row(domain, status):
+            return 'new USERDevice("%s","192.168.1.7","aa:bb:cc:dd:ee:ff","SSID1","DHCP","","%s","WIFI","","PC","1","0","0","","","","","")' % (domain, status)
+        gw = FakeGateway()
+        gw.request = lambda path: 'function USERDevice(){} var UserDevinfo = new Array(' + row('one','Offline') + ',' + row('two','Online') + ',null);'
+        devices = gw.devices()
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]['status'], 'online')
+        self.assertEqual(devices[0]['id'], 'two')
+    def test_devices_reconnects_after_session_expires(self):
+        gw = FakeGateway(); gw.credentials = ('user', 'secret')
+        responses = iter(['login page', 'function USERDevice(){} var UserDevinfo = new Array(null);'])
+        gw.request = lambda path: next(responses)
+        with patch.object(gw, 'login') as login:
+            self.assertEqual(gw.devices(), [])
+            login.assert_called_once_with('user', 'secret')
+    def test_discord_test_message_excludes_device_data(self):
+        class Response:
+            status = 200
+            def read(self, size): return b'{}'
+        class Connection:
+            def __init__(self, host, timeout): pass
+            def request(self, method, path, body, headers):
+                data = __import__('json').loads(body)
+                self.content = data['content']
+                self_outer.assertIn('Teste de notificação', self.content)
+                self_outer.assertNotIn('MAC:', self.content)
+            def getresponse(self): return Response()
+            def close(self): pass
+        self_outer = self
+        with patch.object(app.http.client, 'HTTPSConnection', Connection):
+            app.send_discord('https://discord.com/api/webhooks/123456789012345678/' + 'a' * 30)
     def test_webhook_validates_discord_destination(self):
         token = 'a' * 30
         self.assertTrue(app.validate_webhook('https://discord.com/api/webhooks/123456789012345678/' + token))

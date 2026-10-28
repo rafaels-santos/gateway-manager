@@ -63,6 +63,7 @@ class Gateway:
         self.cookies = http.cookiejar.CookieJar()
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies), NoRedirect())
         self.lock = threading.RLock()
+        self.credentials = None
 
     def request(self, path, data=None, *, referer='/', xhr=False):
         payload = None if data is None else urllib.parse.urlencode(data).encode('utf-8')
@@ -109,11 +110,17 @@ class Gateway:
             page = self.request('/index.asp')
             if not re.search(r'logout', page, re.I):
                 raise GatewayError('Login não confirmado. Verifique usuário, senha e permissões.')
+            self.credentials = (user, password)
 
     def devices(self):
         page = self.request('/html/bbsp/common/GetLanUserDevInfo.asp')
         if 'var UserDevinfo' not in page or 'function USERDevice' not in page:
-            raise GatewayError('Não foi possível ler os dispositivos; a sessão pode ter expirado.')
+            if not self.credentials:
+                raise GatewayError('Não foi possível ler os dispositivos; a sessão pode ter expirado.')
+            self.login(*self.credentials)
+            page = self.request('/html/bbsp/common/GetLanUserDevInfo.asp')
+            if 'var UserDevinfo' not in page or 'function USERDevice' not in page:
+                raise GatewayError('Não foi possível ler os dispositivos após reconectar ao gateway.')
         found = {}
         for match in re.finditer(r'new\s+USERDevice\s*\(([^)]*)\)', page):
             raw = match.group(1)
@@ -131,9 +138,12 @@ class Gateway:
                 continue
             if kind.upper() not in ('ETH', 'WIFI', 'ONU'):
                 continue
-            found[domain] = {'id': domain, 'ip': ip, 'mac': mac, 'port': port,
+            device = {'id': domain, 'ip': ip, 'mac': mac, 'port': port,
                              'status': status.lower(), 'type': 'wifi' if kind.upper() == 'WIFI' else 'lan',
                              'hostname': hostname, 'gateway_name': fields[13]}
+            previous = found.get(mac)
+            if not previous or (device['status'] == 'online' and previous['status'] != 'online'):
+                found[mac] = device
         return list(found.values())
 
     def reservations_page(self):
@@ -201,13 +211,16 @@ def validate_webhook(url):
     return url
 
 
-def send_discord(url, device, name):
+def send_discord(url, device=None, name=''):
     import http.client
     parsed = urllib.parse.urlsplit(validate_webhook(url))
-    title = (name or device.get('gateway_name') or device.get('hostname') or 'Dispositivo sem nome')[:80]
-    address = (device.get('ip') or 'Não informado')[:45]
-    port = (device.get('port') or 'Não informada')[:40]
-    content = 'Novo dispositivo conectado\nNome: %s\nIP: %s\nMAC: %s\nConexão: %s' % (title, address, device['mac'], port)
+    if device is None:
+        content = 'Teste de notificação do Gateway Manager. O webhook está funcionando.'
+    else:
+        title = (name or device.get('gateway_name') or device.get('hostname') or 'Dispositivo sem nome')[:80]
+        address = (device.get('ip') or 'Não informado')[:45]
+        port = (device.get('port') or 'Não informada')[:40]
+        content = 'Novo dispositivo conectado\nNome: %s\nIP: %s\nMAC: %s\nConexão: %s' % (title, address, device['mac'], port)
     payload = json.dumps({'content': content, 'allowed_mentions': {'parse': []}}, ensure_ascii=False).encode('utf-8')
     conn = http.client.HTTPSConnection(parsed.hostname, timeout=10)
     try:
@@ -293,7 +306,7 @@ class Handler(BaseHTTPRequestHandler):
     def send_json(self, status, obj, cookie=None):
         data = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(status); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.send_header('Cache-Control', 'no-store')
-        if cookie is not None: self.send_header('Set-Cookie', 'session=' + cookie + '; HttpOnly; SameSite=Strict; Path=/')
+        if cookie is not None: self.send_header('Set-Cookie', 'session=' + cookie + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + ('604800' if cookie else '0'))
         self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
     def session(self):
         from http.cookies import SimpleCookie
@@ -302,6 +315,13 @@ class Handler(BaseHTTPRequestHandler):
         if not s: raise GatewayError('Conecte-se ao gateway novamente.')
         return s
     def do_GET(self):
+        if self.path == '/api/session':
+            try:
+                gw = self.session()
+                with gw.lock: gw.devices()
+                self.send_json(200, {'connected': True})
+            except GatewayError as e: self.send_json(401, {'error': str(e)})
+            return
         if self.path == '/api/webhook':
             try:
                 gw = self.session()
@@ -370,6 +390,13 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute('INSERT INTO webhook_config (gateway,url,enabled) VALUES (?,?,?) ON CONFLICT(gateway) DO UPDATE SET url=excluded.url,enabled=excluded.enabled', (gw.base, url, int(enabled)))
                 with LOCK: entry = MONITORS.get(gw.base)
                 if entry: entry['wake'].set()
+                self.send_json(200, {'ok': True})
+            elif self.path == '/api/webhook/test':
+                gw = self.session()
+                with labels() as db:
+                    row = db.execute('SELECT url FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
+                if not row: raise GatewayError('Salve a URL do webhook antes de testar.')
+                send_discord(row[0])
                 self.send_json(200, {'ok': True})
             elif self.path == '/api/name':
                 gw = self.session()
