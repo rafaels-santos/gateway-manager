@@ -1,5 +1,5 @@
 const $ = s => document.querySelector(s);
-let reservations = [], deviceTimer = null, loadingDevices = false, webhookEditing = false, currentDevice = null, pendingDevice = new URLSearchParams(location.search).get('device')?.toLowerCase() || '';
+let reservations = [], deviceTimer = null, loadingDevices = false, webhookEditing = false, currentDevice = null, deviceView = 'online', pendingDevice = new URLSearchParams(location.search).get('device')?.toLowerCase() || '';
 async function api(path, body) {
   const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
   const response = await fetch(path, options);
@@ -20,6 +20,9 @@ function setPage(page) {
   if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi();
 }
 document.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page)));
+function selectDeviceView(view){ deviceView=view; for(const state of ['online','offline']){ const active=state===view; $(`#show-${state}`).classList.toggle('active',active); $(`#show-${state}`).setAttribute('aria-pressed',String(active)); } document.querySelectorAll('[data-device-view]').forEach(panel=>panel.hidden=panel.dataset.deviceView!==view); }
+$('#show-online').addEventListener('click',()=>selectDeviceView('online'));
+$('#show-offline').addEventListener('click',()=>selectDeviceView('offline'));
 async function refreshDevices() {
   if (loadingDevices || $('#dashboard').hidden || document.querySelector('.name-form.is-editing')) return;
   loadingDevices=true;
@@ -27,18 +30,19 @@ async function refreshDevices() {
     const data=await api('/api/devices');
     if(document.querySelector('.name-form.is-editing')) return;
     const online=data.devices.filter(d=>d.status==='online');
-    const lan=online.filter(d=>d.type==='lan'), wifi=online.filter(d=>d.type==='wifi');
+    const lan=online.filter(d=>d.type==='lan'), wifi=online.filter(d=>d.type==='wifi'), offline=data.devices.filter(d=>d.status==='offline');
     $('#total-count').textContent=online.length; $('#wifi-count').textContent=wifi.length; $('#lan-count').textContent=lan.length;
     const target=$('#device-sections'); target.replaceChildren();
-    for(const [title, subtitle, devices] of [['Wi-Fi','Conexões sem fio',wifi],['LAN','Conexões com fio',lan]]) {
+    for(const [title, subtitle, devices, state] of [['Wi-Fi','Conexões sem fio',wifi,'online'],['LAN','Conexões com fio',lan,'online'],['Dispositivos offline','Dispositivos informados pelo gateway como desconectados',offline,'offline']]) {
       const panel=node('div','panel device-panel'); const head=node('div','panel-header');
-      const heading=node('div'); heading.append(node('h2','',title),node('p','muted',subtitle)); head.append(heading,node('span','count',`${devices.length} online`)); panel.append(head);
-      if(!devices.length) panel.append(node('p','empty','Nenhum dispositivo conectado nesta rede.'));
+      panel.dataset.deviceView=state; panel.hidden=state!==deviceView;
+      const heading=node('div'); heading.append(node('h2','',title),node('p','muted',subtitle)); head.append(heading,node('span','count',`${devices.length} ${state}`)); panel.append(head);
+      if(!devices.length) panel.append(node('p','empty',state==='offline'?'Nenhum dispositivo offline informado pelo gateway.':'Nenhum dispositivo conectado nesta rede.'));
       const grid=node('div','device-grid');
       devices.forEach(d=>{
         const card=node('button','device-card'); card.type='button';
         const top=node('div','device-card-top'), icon=node('span','device-icon'); icon.append(deviceIcon(d.type));
-        top.append(icon,node('span','online-pill','● Online')); const title=node('strong',`device-card-name${d.name ? ' ip-fixed' : ''}`,d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome');
+        top.append(icon,node('span',state==='offline'?'offline-pill':'online-pill',state==='offline'?'● Offline':'● Online')); const title=node('strong',`device-card-name${d.name ? ' ip-fixed' : ''}`,d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome');
         card.append(top,title,node('span','device-card-network',d.network || d.port || 'Rede não identificada'),node('span',`device-card-ip${d.ip_fixed || d.ip_static ? ' ip-fixed' : ''}`,`${d.ip || 'Sem IP'}${d.ip_fixed ? ' · Fixo' : d.ip_static ? ' · Estático' : ''}`),node('span','device-card-mac',d.mac),node('span','device-card-open','Ver detalhes →'));
         card.addEventListener('click',()=>openDevice(d)); grid.append(card);
       }); panel.append(grid); target.append(panel);
