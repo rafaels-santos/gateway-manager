@@ -1,4 +1,7 @@
 import unittest
+import tempfile
+from unittest.mock import patch
+import app
 from app import Gateway, GatewayError, DOMAIN
 
 PAGE = r'''<script>var Dhcps = new Array(new stDhcp("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress.1","1","192\x2e168\x2e100\x2e100","aa\x3abb\x3acc\x3add\x3aee\x3aff"),null); getValue('onttoken');</script>'''
@@ -49,6 +52,31 @@ class GatewayTests(unittest.TestCase):
     def test_device_list_rejects_session_error(self):
         gw = FakeGateway(); gw.request = lambda path: '<html>login</html>'
         with self.assertRaises(GatewayError): gw.devices()
+    def test_webhook_validates_discord_destination(self):
+        token = 'a' * 30
+        self.assertTrue(app.validate_webhook('https://discord.com/api/webhooks/123456789012345678/' + token))
+        for bad in ('http://discord.com/api/webhooks/123456789012345678/' + token,
+                    'https://discord.com.evil.test/api/webhooks/123456789012345678/' + token,
+                    'https://discord.com/api/webhooks/123456789012345678/' + token + '?x=1'):
+            with self.assertRaises(GatewayError): app.validate_webhook(bad)
+    def test_webhook_baseline_new_device_and_retry(self):
+        devices = [{'mac':'aa:bb:cc:dd:ee:01','status':'online','hostname':'PC','ip':'192.168.1.10','port':'LAN1'}]
+        class MonitorGateway:
+            base = 'http://192.168.1.1'
+            lock = __import__('threading').RLock()
+            def devices(self): return devices
+        with tempfile.TemporaryDirectory(dir='.') as tmp, patch.object(app, 'DATA_DIR', __import__('pathlib').Path(tmp)):
+            with app.labels() as db:
+                db.execute('INSERT INTO webhook_config VALUES (?,?,?,?)', (MonitorGateway.base,'https://discord.com/api/webhooks/123456789012345678/'+'a'*30,1,0))
+            with patch.object(app, 'send_discord') as send:
+                app.monitor_once(MonitorGateway()); send.assert_not_called()
+                devices.append({'mac':'aa:bb:cc:dd:ee:02','status':'online','hostname':'Phone','ip':'192.168.1.11','port':'SSID1'})
+                send.side_effect=GatewayError('Erro simulado')
+                with self.assertRaises(GatewayError): app.monitor_once(MonitorGateway())
+                send.side_effect=None
+                app.monitor_once(MonitorGateway())
+                app.monitor_once(MonitorGateway())
+                self.assertEqual(send.call_count,2)
     def test_public_address_rejected(self):
         with self.assertRaises(GatewayError): Gateway('8.8.8.8')
 

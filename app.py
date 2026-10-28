@@ -1,11 +1,13 @@
 import base64
 import http.cookiejar
+import http.client
 import ipaddress
 import json
 import re
 import secrets
 import sqlite3
 import threading
+from contextlib import contextmanager
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -17,15 +19,25 @@ ROOT = Path(__file__).parent
 STATIC = ROOT / 'static'
 SESSIONS = {}
 LOCK = threading.Lock()
+MONITORS = {}
+MONITOR_LOCKS = {}
 PATH = '/html/bbsp/dhcpstatic/dhcpstatic.asp'
 DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress'
 DATA_DIR = Path(os.environ.get('DATA_DIR', str(ROOT / 'data')))
 
+@contextmanager
 def labels():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DATA_DIR / 'labels.db')
     db.execute('CREATE TABLE IF NOT EXISTS labels (gateway TEXT, mac TEXT, name TEXT, PRIMARY KEY (gateway, mac))')
-    return db
+    db.execute('CREATE TABLE IF NOT EXISTS webhook_config (gateway TEXT PRIMARY KEY, url TEXT NOT NULL, enabled INTEGER NOT NULL, baseline INTEGER NOT NULL DEFAULT 0)')
+    db.execute('CREATE TABLE IF NOT EXISTS seen_devices (gateway TEXT NOT NULL, mac TEXT NOT NULL, PRIMARY KEY (gateway, mac))')
+    try:
+        if os.name != 'nt': os.chmod(DATA_DIR / 'labels.db', 0o600)
+        with db:
+            yield db
+    finally:
+        db.close()
 
 class GatewayError(Exception):
     pass
@@ -175,6 +187,89 @@ class Gateway:
             if not any(r['ip'] == ip and r['mac'] == mac for r in updated):
                 raise GatewayError('O gateway não confirmou a reserva. Verifique a interface original antes de tentar novamente.')
 
+def validate_webhook(url):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        valid = (parsed.scheme == 'https' and parsed.hostname in ('discord.com', 'discordapp.com')
+                 and not parsed.username and not parsed.password and parsed.port in (None, 443)
+                 and not parsed.query and not parsed.fragment
+                 and re.fullmatch(r'/api/webhooks/[0-9]{15,22}/[A-Za-z0-9_-]{20,200}', parsed.path))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise GatewayError('Informe uma URL HTTPS de webhook do Discord válida.')
+    return url
+
+
+def send_discord(url, device, name):
+    import http.client
+    parsed = urllib.parse.urlsplit(validate_webhook(url))
+    title = (name or device.get('gateway_name') or device.get('hostname') or 'Dispositivo sem nome')[:80]
+    address = (device.get('ip') or 'Não informado')[:45]
+    port = (device.get('port') or 'Não informada')[:40]
+    content = 'Novo dispositivo conectado\nNome: %s\nIP: %s\nMAC: %s\nConexão: %s' % (title, address, device['mac'], port)
+    payload = json.dumps({'content': content, 'allowed_mentions': {'parse': []}}, ensure_ascii=False).encode('utf-8')
+    conn = http.client.HTTPSConnection(parsed.hostname, timeout=10)
+    try:
+        conn.request('POST', parsed.path + '?wait=true', body=payload, headers={'Content-Type': 'application/json', 'User-Agent': 'GatewayManager/1.0'})
+        response = conn.getresponse()
+        response.read(65536)
+        if not 200 <= response.status < 300:
+            raise GatewayError('O Discord recusou a notificação (HTTP %d).' % response.status)
+    except (OSError, http.client.HTTPException):
+        raise GatewayError('Não foi possível enviar a notificação ao Discord.')
+    finally:
+        conn.close()
+
+
+def monitor_once(gw):
+    with labels() as db:
+        config = db.execute('SELECT url, enabled, baseline FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
+    if not config or not config[1]: return 'Notificações desativadas.'
+    with gw.lock: devices = [d for d in gw.devices() if d['status'] == 'online']
+    with labels() as db:
+        seen = {row[0] for row in db.execute('SELECT mac FROM seen_devices WHERE gateway=?', (gw.base,))}
+        if not config[2]:
+            db.executemany('INSERT OR IGNORE INTO seen_devices (gateway, mac) VALUES (?,?)', ((gw.base, d['mac']) for d in devices))
+            db.execute('UPDATE webhook_config SET baseline=1 WHERE gateway=?', (gw.base,))
+            return 'Monitorando; dispositivos atuais registrados como referência.'
+        names = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gw.base,)))
+    pending = {d['mac']: d for d in devices if d['mac'] not in seen}
+    for mac, device in pending.items():
+        send_discord(config[0], device, names.get(mac, ''))
+        with labels() as db:
+            db.execute('INSERT OR IGNORE INTO seen_devices (gateway,mac) VALUES (?,?)', (gw.base, mac))
+    return 'Monitorando dispositivos a cada 30 segundos.'
+
+
+def start_monitor(gw):
+    with LOCK:
+        old = MONITORS.get(gw.base)
+        if old: old['stop'].set()
+        serial = MONITOR_LOCKS.setdefault(gw.base, threading.Lock())
+        entry = {'stop': threading.Event(), 'wake': threading.Event(), 'status': 'Aguardando primeira verificação.', 'gateway': gw}
+        MONITORS[gw.base] = entry
+    def worker():
+        while not entry['stop'].is_set():
+            try:
+                with serial:
+                    if entry['stop'].is_set(): break
+                    entry['status'] = monitor_once(gw)
+            except GatewayError as e:
+                entry['status'] = str(e)
+            except Exception:
+                entry['status'] = 'Falha ao monitorar. Verifique a sessão e tente novamente.'
+            entry['wake'].wait(30)
+            entry['wake'].clear()
+    threading.Thread(target=worker, daemon=True, name='gateway-monitor').start()
+
+
+def stop_monitor(gw):
+    with LOCK:
+        entry = MONITORS.get(gw.base)
+        if entry and entry['gateway'] is gw:
+            entry['stop'].set(); entry['wake'].set(); MONITORS.pop(gw.base, None)
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         # Do not log form data, gateway addresses, or credentials.
@@ -191,6 +286,15 @@ class Handler(BaseHTTPRequestHandler):
         if not s: raise GatewayError('Conecte-se ao gateway novamente.')
         return s
     def do_GET(self):
+        if self.path == '/api/webhook':
+            try:
+                gw = self.session()
+                with labels() as db:
+                    row = db.execute('SELECT enabled FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
+                with LOCK: entry = MONITORS.get(gw.base)
+                self.send_json(200, {'configured': bool(row), 'enabled': bool(row and row[0]), 'status': entry['status'] if entry else 'Sessão sem monitoramento.'})
+            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            return
         if self.path == '/api/devices':
             try:
                 gateway = self.session()
@@ -228,9 +332,24 @@ class Handler(BaseHTTPRequestHandler):
                 gw = Gateway(body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
                 key = secrets.token_urlsafe(32)
                 with LOCK: SESSIONS[key] = gw
+                start_monitor(gw)
                 self.send_json(200, {'ok': True}, key)
             elif self.path == '/api/reservation':
                 self.session().save(body); self.send_json(200, {'ok': True})
+            elif self.path == '/api/webhook':
+                gw = self.session()
+                url = str(body.get('url', '')).strip()
+                enabled = body.get('enabled') is True
+                with labels() as db:
+                    old = db.execute('SELECT url FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
+                    if url: validate_webhook(url)
+                    elif old: url = old[0]
+                    elif enabled: raise GatewayError('Informe a URL do webhook do Discord.')
+                    else: raise GatewayError('Nenhum webhook configurado.')
+                    db.execute('INSERT INTO webhook_config (gateway,url,enabled) VALUES (?,?,?) ON CONFLICT(gateway) DO UPDATE SET url=excluded.url,enabled=excluded.enabled', (gw.base, url, int(enabled)))
+                with LOCK: entry = MONITORS.get(gw.base)
+                if entry: entry['wake'].set()
+                self.send_json(200, {'ok': True})
             elif self.path == '/api/name':
                 gw = self.session()
                 mac = str(body.get('mac', '')).lower().strip()
@@ -243,7 +362,8 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/logout':
                 from http.cookies import SimpleCookie
                 c = SimpleCookie(); c.load(self.headers.get('Cookie', ''))
-                with LOCK: SESSIONS.pop(c['session'].value if 'session' in c else '', None)
+                with LOCK: old = SESSIONS.pop(c['session'].value if 'session' in c else '', None)
+                if old: stop_monitor(old)
                 self.send_json(200, {'ok': True}, '')
             else: self.send_error(404)
         except (GatewayError, ValueError, TypeError, KeyError) as e: self.send_json(400, {'error': str(e)})

@@ -1,5 +1,5 @@
 const $ = s => document.querySelector(s);
-let reservations = [], deviceTimer = null, loadingDevices = false;
+let reservations = [], deviceTimer = null, loadingDevices = false, webhookEditing = false;
 async function api(path, body) {
   const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
   const response = await fetch(path, options);
@@ -16,8 +16,8 @@ function deviceIcon(kind) {
 function setPage(page) {
   document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
   document.querySelectorAll('.nav-item').forEach(el=>{ const active=el.dataset.page===page; el.classList.toggle('active',active); if(active) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); });
-  $('#breadcrumb').textContent=page==='devices'?'Dispositivos':'Reservas de IP';
-  if(page==='devices') refreshDevices(); else refreshReservations().catch(e=>message(e.message,true));
+  $('#breadcrumb').textContent=page==='devices'?'Dispositivos':page==='reservations'?'Reservas de IP':'Notificações';
+  if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else refreshWebhook().catch(e=>message(e.message,true));
 }
 document.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page)));
 async function refreshDevices() {
@@ -55,6 +55,23 @@ async function refreshReservations(){
 }
 $('#connect').addEventListener('submit',async e=>{e.preventDefault();message('Conectando...');try{await api('/api/login',{address:$('#address').value,username:$('#username').value,password:$('#password').value});$('#password').value='';$('#login-screen').hidden=true;$('#dashboard').hidden=false;message('Conectado.');await refreshDevices();clearInterval(deviceTimer);deviceTimer=setInterval(()=>{if(!document.hidden)refreshDevices()},15000)}catch(err){$('#password').value='';message(err.message,true)}});
 $('#reservation').addEventListener('submit',async e=>{e.preventDefault();message('Salvando reserva...');try{const mac=$('#mac').value.trim().toLowerCase(),id=$('#reservation-id').value,ip=$('#ip').value.trim();const old=reservations.find(row=>row.id===id);if(!old||old.mac!==mac||old.ip!==ip)await api('/api/reservation',{id,mac,ip});try{await api('/api/name',{mac,name:$('#name').value})}catch(err){message('Reserva salva, mas o identificador não foi salvo: '+err.message,true);await refreshReservations();return}resetForm();await refreshReservations();message('Dados salvos.')}catch(err){message(err.message,true)}});
+async function refreshWebhook(){
+  const data=await api('/api/webhook');
+  if(webhookEditing) return;
+  $('#webhook-enabled').checked=data.enabled;
+  $('#webhook-badge').textContent=data.enabled?'Ativado':data.configured?'Desativado':'Não configurado';
+  $('#webhook-url').placeholder=data.configured?'URL salva — preencha apenas para alterar':'https://discord.com/api/webhooks/...';
+  $('#webhook-status').textContent=data.status;
+}
+$('#webhook-form').addEventListener('input',()=>{webhookEditing=true});
+$('#webhook-form').addEventListener('change',()=>{webhookEditing=true});
+$('#webhook-form').addEventListener('submit',async e=>{
+  e.preventDefault(); const button=e.submitter; button.disabled=true;
+  try { await api('/api/webhook',{url:$('#webhook-url').value,enabled:$('#webhook-enabled').checked}); $('#webhook-url').value=''; webhookEditing=false; await refreshWebhook(); message('Configurações de notificação salvas.'); }
+  catch(err) { message(err.message,true); } finally { button.disabled=false; }
+});
 $('#cancel').addEventListener('click',resetForm);$('#refresh-devices').addEventListener('click',refreshDevices);$('#refresh-reservations').addEventListener('click',()=>refreshReservations().catch(e=>message(e.message,true)));
-$('#logout').addEventListener('click',async()=>{try{await api('/api/logout',{})}finally{clearInterval(deviceTimer);$('#dashboard').hidden=true;$('#login-screen').hidden=false;resetForm();message('Sessão encerrada.')}});
+$('#logout').addEventListener('click',async()=>{try{await api('/api/logout',{})}finally{clearInterval(deviceTimer);webhookEditing=false;$('#webhook-url').value='';$('#dashboard').hidden=true;$('#login-screen').hidden=false;resetForm();message('Sessão encerrada.')}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&!$('#dashboard').hidden)refreshDevices()});
+
+setInterval(()=>{if(!document.hidden && !$('#dashboard').hidden && !$('#page-notifications').hidden && document.activeElement!==$('#webhook-url')) refreshWebhook().catch(()=>{});},10000);
