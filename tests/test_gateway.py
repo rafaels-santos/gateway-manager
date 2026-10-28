@@ -20,6 +20,39 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_fixed_ip_requires_matching_mac_and_ip(self):
+        devices = [{'mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.1.10','ip_type':'DHCP'}, {'mac':'aa:bb:cc:dd:ee:01','ip':'192.168.1.11','ip_type':'Static'}]
+        app.mark_fixed_addresses(devices, [{'mac':'AA:BB:CC:DD:EE:FF','ip':'192.168.1.20'}])
+        self.assertEqual([d['ip_fixed'] for d in devices], [False, True])
+        app.mark_fixed_addresses(devices, [{'mac':'AA:BB:CC:DD:EE:FF','ip':'192.168.1.10'}])
+        self.assertTrue(devices[0]['ip_fixed'])
+    def test_dhcp_parser_preserves_dns_and_network(self):
+        gw = FakeGateway()
+        gw.request = lambda path: '''var MainDhcpRange = new Array(new dhcpmainst("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement","1","192.168.1.2","192.168.1.200","86400","1","","","","","","","","","","","1.1.1.1,8.8.8.8","1","","0",""),null); var LanIpInfos = new Array(new stipaddr("domain","1","192.168.1.1","255.255.255.0"),null); onttoken'''
+        c = gw.dhcp_config()
+        self.assertEqual((c['start'], c['end'], c['lease'], c['dns_primary'], c['dns_secondary'], c['lan_ip']), ('192.168.1.2','192.168.1.200','86400','1.1.1.1','8.8.8.8','192.168.1.1'))
+    def test_dns_write_only_changes_dns_and_verifies(self):
+        gw = FakeGateway()
+        base = {'enabled': True, 'start':'192.168.1.2', 'end':'192.168.1.200', 'lease':'86400', 'dns_primary':'1.1.1.1', 'dns_secondary':'', 'lan_ip':'192.168.1.1', 'mask':'255.255.255.0'}
+        gw.dhcp_config = lambda: dict(base)
+        gw.config_token = lambda: 'a'*32
+        def request(path, data=None, **kw):
+            self.assertEqual(set(data), {'z.X_HW_DNSList','x.X_HW_Token'})
+            base['dns_primary'] = data['z.X_HW_DNSList']
+        gw.request = request
+        gw.save_dhcp({'dns_primary':'8.8.8.8','dns_secondary':''}, dns_only=True)
+        self.assertEqual(base['dns_primary'], '8.8.8.8')
+    def test_wifi_parser_only_reads_public_fields(self):
+        gw=FakeGateway()
+        gw.request=lambda path: '''var WlanArr = new Array(new stWlan("InternetGatewayDevice.LANDevice.1.WLANConfiguration.1","ath0","1","Rede","1","64","1"),null); onttoken; function t(){new stWlan(x,y)}'''
+        networks=gw.wifi_config()
+        self.assertEqual((networks[0]['ssid'],networks[0]['enabled'],networks[0]['broadcast']), ('Rede',True,True))
+    def test_reboot_uses_observed_command(self):
+        gw=FakeGateway(); gw.config_token=lambda:'a'*32
+        with patch.object(gw, 'request') as request:
+            gw.reboot()
+        self.assertIn('ResetBoard', request.call_args.args[0])
+        self.assertEqual(request.call_args.args[1], {'x.X_HW_Token':'a'*32})
     def test_device_deep_link_serves_app(self):
         import io
         handler = app.Handler.__new__(app.Handler)
@@ -31,7 +64,7 @@ class GatewayTests(unittest.TestCase):
         self.assertIn(b'device-dialog', handler.wfile.getvalue())
     def test_parse_encoded_values(self):
         rows, _ = FakeGateway().reservations()
-        self.assertEqual(rows, [{'id': DOMAIN + '.1', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.100.100'}])
+        self.assertEqual(rows, [{'id': DOMAIN + '.1', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.100.100', 'enabled': True}])
     def test_update_and_verify(self):
         gw = FakeGateway()
         gw.save({'id': DOMAIN + '.1', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.100.101'})

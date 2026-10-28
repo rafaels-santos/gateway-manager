@@ -22,6 +22,9 @@ LOCK = threading.Lock()
 MONITORS = {}
 MONITOR_LOCKS = {}
 PATH = '/html/bbsp/dhcpstatic/dhcpstatic.asp'
+DHCP_PATH = '/html/bbsp/dhcpservercfg/dhcp2.asp'
+WIFI_PATH = '/html/amp/wlanbasic/WlanBasic.asp'
+LAN_DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement'
 DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress'
 DATA_DIR = Path(os.environ.get('DATA_DIR', str(ROOT / 'data')))
 # Observed on this gateway; override if the SSID assignments change.
@@ -48,6 +51,14 @@ class GatewayError(Exception):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+def parse_constructors(page, name):
+    result = []
+    for raw in re.findall(r'new\s+' + re.escape(name) + r'\s*\(([^)]*)\)', page):
+        raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: '\\u00' + m.group(1), raw)
+        try: result.append(json.loads('[' + raw + ']'))
+        except (ValueError, TypeError): raise GatewayError('Formato de configuração do gateway não reconhecido.')
+    return result
 
 class Gateway:
     def __init__(self, address):
@@ -158,21 +169,111 @@ class Gateway:
             raise GatewayError('Sessão expirada ou tela de reservas indisponível para esta conta.')
         return page
 
+    def dhcp_config(self):
+        page = self.request(DHCP_PATH)
+        pools, interfaces = parse_constructors(page, 'dhcpmainst'), parse_constructors(page, 'stipaddr')
+        if not pools or len(pools[0]) < 20 or not interfaces or len(interfaces[0]) < 4 or 'onttoken' not in page:
+            raise GatewayError('Configuração DHCP indisponível ou sessão expirada.')
+        p, lan = pools[0], interfaces[0]
+        dns = (p[16] or p[18]).split(',')
+        return {'enabled': p[1] == '1', 'start': p[2], 'end': p[3], 'lease': p[4], 'dns_primary': dns[0], 'dns_secondary': dns[1] if len(dns)>1 else '', 'lan_ip': lan[2], 'mask': lan[3]}
+
+    def config_token(self):
+        token = self.request('/html/ssmp/common/GetRandToken.asp', {}, xhr=True).strip()
+        if not re.fullmatch(r'[a-zA-Z0-9]{16,256}', token): raise GatewayError('Token de operação indisponível; nenhuma alteração foi feita.')
+        return token
+
+    def save_dhcp(self, body, dns_only=False):
+        with self.lock:
+            current = self.dhcp_config()
+            params = {}
+            if dns_only:
+                values = []
+                for key in ('dns_primary', 'dns_secondary'):
+                    value = str(body.get(key, '')).strip()
+                    if value:
+                        try: value = str(ipaddress.IPv4Address(value))
+                        except ValueError: raise GatewayError('Informe endereços IPv4 válidos para DNS.')
+                    values.append(value)
+                if not values[0] and values[1]: raise GatewayError('Informe o DNS primário antes do secundário.')
+                params['z.X_HW_DNSList'] = ','.join(v for v in values if v)
+            else:
+                if not isinstance(body.get('enabled'), bool): raise GatewayError('Estado DHCP inválido.')
+                try:
+                    start, end = (ipaddress.IPv4Address(body.get(k, '')) for k in ('start', 'end'))
+                    net = ipaddress.IPv4Network((current['lan_ip'], current['mask']), strict=False)
+                    lease = int(body.get('lease', ''))
+                except (ValueError, TypeError): raise GatewayError('Informe intervalo e tempo de concessão válidos.')
+                if start not in net or end not in net or start > end or start in (net.network_address, net.broadcast_address) or end in (net.network_address, net.broadcast_address) or start <= ipaddress.IPv4Address(current['lan_ip']) <= end or not 60 <= lease <= 31536000:
+                    raise GatewayError('Intervalo DHCP inválido para a rede ou concessão fora de 60 a 31536000 segundos.')
+                params.update({'z.DHCPServerEnable': int(body['enabled']), 'z.MinAddress': str(start), 'z.MaxAddress': str(end), 'z.DHCPLeaseTime': lease})
+            params['x.X_HW_Token'] = self.config_token()
+            url = '/set.cgi?' + urllib.parse.urlencode({'z': LAN_DOMAIN, 'RequestFile': DHCP_PATH.lstrip('/')})
+            self.request(url, params, referer=DHCP_PATH)
+            updated = self.dhcp_config()
+            expected = {'dns_primary': values[0], 'dns_secondary': values[1]} if dns_only else {'enabled': body['enabled'], 'start': str(start), 'end': str(end), 'lease': str(lease)}
+            if any(str(updated[k]) != str(v) for k,v in expected.items()):
+                raise GatewayError('O gateway não confirmou os valores. Confira no painel Huawei antes de tentar novamente.')
+            return updated
+
+    def wifi_config(self):
+        page = self.request(WIFI_PATH + '?2G')
+        match = re.search(r'var\s+WlanArr\s*=\s*new\s+Array\((.*?)\s*,\s*null\s*\)', page, re.S)
+        if not match: raise GatewayError('Configuração Wi-Fi indisponível ou sessão expirada.')
+        rows = []
+        for raw in re.findall(r'new\s+stWlan\s*\(([^)]*)\)', match.group(1)):
+            fields = re.findall(r'"(?:\\.|[^"\\])*"', raw)[:6]
+            if len(fields) != 6: raise GatewayError('Formato Wi-Fi não reconhecido.')
+            fields = [re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: '\\u00' + m.group(1), x) for x in fields]
+            rows.append(json.loads('[' + ','.join(fields) + ']'))
+        networks = []
+        for fields in rows:
+            if len(fields) < 6: continue
+            domain, _, enabled, ssid, broadcast, maximum = fields[:6]
+            match = re.fullmatch(r'InternetGatewayDevice\.LANDevice\.1\.WLANConfiguration\.(\d+)', domain)
+            if not match: continue
+            n = int(match.group(1))
+            networks.append({'id': domain, 'ssid': ssid, 'enabled': enabled == '1', 'broadcast': broadcast == '1', 'max_clients': maximum, 'network': SSID_MAP.get('SSID'+str(n), 'Rede não identificada')})
+        if not networks or 'onttoken' not in page: raise GatewayError('Configuração Wi-Fi indisponível ou sessão expirada.')
+        return networks
+
+    def save_wifi(self, body):
+        with self.lock:
+            existing = self.wifi_config()
+            target = next((n for n in existing if n['id'] == body.get('id')), None)
+            if not target: raise GatewayError('Rede Wi-Fi não encontrada; atualize a lista.')
+            ssid = str(body.get('ssid', '')).strip()
+            if not ssid or len(ssid.encode('utf-8')) > 32 or any(ord(c) < 32 for c in ssid): raise GatewayError('Informe um nome Wi-Fi de até 32 bytes.')
+            if any(n['ssid'] == ssid and n['id'] != target['id'] for n in existing): raise GatewayError('Já existe uma rede com esse nome.')
+            if not isinstance(body.get('enabled'), bool) or not isinstance(body.get('broadcast'), bool): raise GatewayError('Estado da rede inválido.')
+            params = {'y.SSID': ssid, 'y.Enable': int(body['enabled']), 'y.SSIDAdvertisementEnabled': int(body['broadcast']), 'x.X_HW_Token': self.config_token()}
+            url = '/set.cgi?' + urllib.parse.urlencode({'y': target['id'], 'RequestFile': WIFI_PATH.lstrip('/')})
+            self.request(url, params, referer=WIFI_PATH + '?2G')
+            updated = next((n for n in self.wifi_config() if n['id'] == target['id']), None)
+            if not updated or any(updated[k] != body[k] for k in ('ssid','enabled','broadcast')): raise GatewayError('O gateway não confirmou a rede. Confira no painel Huawei antes de tentar novamente.')
+            return updated
+
+    def reboot(self):
+        with self.lock:
+            token = self.config_token()
+            url = '/set.cgi?' + urllib.parse.urlencode({'x': 'InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard', 'RequestFile': '../CustomApp/mainpage.asp'})
+            self.request(url, {'x.X_HW_Token': token}, referer='/CustomApp/mainpage.asp')
+
     def reservations(self):
         page = self.reservations_page()
         # Firmware serializes reservations as constructors in JavaScript.
         rows = []
-        pattern = r'new\s+stDhcp\s*\(\s*"(InternetGatewayDevice\.LANDevice\.1\.LANHostConfigManagement\.DHCPStaticAddress\.\d+)"\s*,\s*"[01]"\s*,\s*"([^"\n]*)"\s*,\s*"([^"\n]*)"'
+        pattern = r'new\s+stDhcp\s*\(\s*"(InternetGatewayDevice\.LANDevice\.1\.LANHostConfigManagement\.DHCPStaticAddress\.\d+)"\s*,\s*"([01])"\s*,\s*"([^"\n]*)"\s*,\s*"([^"\n]*)"'
         def decode(value):
             return re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), value)
-        for domain, raw_ip, raw_mac in re.findall(pattern, page, re.I):
+        for domain, enabled, raw_ip, raw_mac in re.findall(pattern, page, re.I):
             mac, ip = decode(raw_mac).lower(), decode(raw_ip)
             if re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
                 try:
                     ipaddress.IPv4Address(ip)
                 except ValueError:
                     raise GatewayError('O gateway retornou um IP inválido.')
-                rows.append({'id': domain, 'mac': mac, 'ip': ip})
+                rows.append({'id': domain, 'mac': mac, 'ip': ip, 'enabled': enabled == '1'})
         if not rows and re.search(r'DHCPStaticAddress\.\d+', page):
             raise GatewayError('Formato de reservas não reconhecido; nenhuma alteração foi feita.')
         return rows, page
@@ -308,6 +409,12 @@ def enrich_reservations(rows, devices, names):
         row['gateway_name'] = device.get('gateway_name', '')
     return rows
 
+def mark_fixed_addresses(devices, reservations):
+    reserved = {(row['mac'].lower(), row['ip']) for row in reservations if row.get('enabled', True)}
+    for device in devices:
+        device['ip_fixed'] = (device['mac'].lower(), device['ip']) in reserved or device.get('ip_type', '').lower() == 'static'
+    return devices
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         # Do not log form data, gateway addresses, or credentials.
@@ -340,14 +447,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {'configured': bool(row), 'enabled': bool(row and row[0]), 'status': entry['status'] if entry else 'Sessão sem monitoramento.'})
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
+        if self.path in ('/api/dhcp', '/api/wifi'):
+            try:
+                gw = self.session()
+                with gw.lock: result = gw.dhcp_config() if self.path == '/api/dhcp' else gw.wifi_config()
+                self.send_json(200, {'config': result})
+            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            return
         if self.path == '/api/devices':
             try:
                 gateway = self.session()
-                with gateway.lock: rows = gateway.devices()
+                with gateway.lock:
+                    rows = gateway.devices()
+                    try:
+                        reservations, _ = gateway.reservations()
+                        mark_fixed_addresses(rows, reservations)
+                        reservations_available = True
+                    except GatewayError:
+                        for row in rows: row['ip_fixed'] = row.get('ip_type', '').lower() == 'static'
+                        reservations_available = False
                 with labels() as db:
                     saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
                 for row in rows: row['name'] = saved.get(row['mac'], '')
-                self.send_json(200, {'devices': rows})
+                self.send_json(200, {'devices': rows, 'reservations_available': reservations_available})
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
         if self.path == '/api/reservations':
@@ -392,6 +514,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {'ok': True}, key)
             elif self.path == '/api/reservation':
                 self.session().save(body); self.send_json(200, {'ok': True})
+            elif self.path in ('/api/dhcp', '/api/dns'):
+                config = self.session().save_dhcp(body, dns_only=self.path == '/api/dns')
+                self.send_json(200, {'config': config})
+            elif self.path == '/api/wifi':
+                config = self.session().save_wifi(body)
+                self.send_json(200, {'config': config})
+            elif self.path == '/api/reboot':
+                if body.get('confirm') != 'REINICIAR': raise GatewayError('Confirmação de reinício inválida.')
+                self.session().reboot(); self.send_json(200, {'ok': True})
             elif self.path == '/api/webhook':
                 gw = self.session()
                 url = str(body.get('url', '')).strip()
