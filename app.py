@@ -82,7 +82,9 @@ class Gateway:
             token = self.request('/asp/GetRandCount.asp', {}, xhr=True).strip()
             if not token or len(token) > 256:
                 raise GatewayError('O gateway não retornou um token de login válido.')
-            self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
+            result = self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
+            fail = re.search(r"(?:var\s+)?FailStat\s*=\s*['\"](\d+)['\"]", result)
+            print('Diagnóstico de login: página de login=%s; FailStat=%s; cookies=%s' % ('txt_Password' in result, fail.group(1) if fail else 'ausente', ','.join(c.name for c in self.cookies) or 'nenhum'), flush=True)
             page = self.request('/index.asp')
             if not re.search(r'logout', page, re.I):
                 raise GatewayError('Login não confirmado. Verifique usuário, senha e permissões.')
