@@ -61,6 +61,7 @@ class GatewayTests(unittest.TestCase):
             with self.assertRaises(GatewayError): app.validate_webhook(bad)
     def test_webhook_baseline_new_device_and_retry(self):
         devices = [{'mac':'aa:bb:cc:dd:ee:01','status':'online','hostname':'PC','ip':'192.168.1.10','port':'LAN1'}]
+        devices.append({'mac':'aa:bb:cc:dd:ee:03','status':'offline','hostname':'Known','ip':'192.168.1.12','port':'SSID1'})
         class MonitorGateway:
             base = 'http://192.168.1.1'
             lock = __import__('threading').RLock()
@@ -69,6 +70,8 @@ class GatewayTests(unittest.TestCase):
             with app.labels() as db:
                 db.execute('INSERT INTO webhook_config VALUES (?,?,?,?)', (MonitorGateway.base,'https://discord.com/api/webhooks/123456789012345678/'+'a'*30,1,0))
             with patch.object(app, 'send_discord') as send:
+                app.monitor_once(MonitorGateway()); send.assert_not_called()
+                devices[1]['status'] = 'online'
                 app.monitor_once(MonitorGateway()); send.assert_not_called()
                 devices.append({'mac':'aa:bb:cc:dd:ee:02','status':'online','hostname':'Phone','ip':'192.168.1.11','port':'SSID1'})
                 send.side_effect=GatewayError('Erro simulado')

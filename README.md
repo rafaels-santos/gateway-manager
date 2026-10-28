@@ -31,6 +31,6 @@ Caso o contêiner não inicie, consulte `docker compose logs gateway-manager` e 
 
 ## Notificações no Discord
 
-Na aba **Notificações**, informe a URL de webhook criada no canal do Discord e ative o monitoramento. A primeira leitura registra os dispositivos online como referência, sem enviar avisos. O aplicativo verifica a rede a cada 30 segundos e notifica uma vez por MAC novo. Em caso de falha no envio, o dispositivo permanece pendente para uma próxima verificação enquanto estiver online. A URL e os MACs já vistos são guardados no volume `/data`; a URL não volta a ser exibida pela interface.
+Na aba **Notificações**, informe a URL de webhook criada no canal do Discord e ative o monitoramento. A primeira leitura registra os dispositivos conhecidos pelo gateway como referência, sem enviar avisos, inclusive os que estiverem offline. O aplicativo verifica a rede a cada 30 segundos e notifica uma vez por MAC novo. Em caso de falha no envio, o dispositivo permanece pendente para uma próxima verificação enquanto estiver online. A URL e os MACs já vistos são guardados no volume `/data`; a URL não volta a ser exibida pela interface.
 
 O monitor roda no servidor enquanto existir uma sessão válida com o gateway, inclusive com a página fechada. Como as credenciais do gateway não são persistidas, após reiniciar o contêiner ou quando a sessão expirar é necessário conectar novamente. A detecção depende da lista online fornecida pelo gateway e não identifica conexões ocorridas entre verificações. Uma alteração de MAC pode ser tratada como um novo dispositivo.

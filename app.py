@@ -226,11 +226,12 @@ def monitor_once(gw):
     with labels() as db:
         config = db.execute('SELECT url, enabled, baseline FROM webhook_config WHERE gateway=?', (gw.base,)).fetchone()
     if not config or not config[1]: return 'Notificações desativadas.'
-    with gw.lock: devices = [d for d in gw.devices() if d['status'] == 'online']
+    with gw.lock: all_devices = gw.devices()
+    devices = [d for d in all_devices if d['status'] == 'online']
     with labels() as db:
         seen = {row[0] for row in db.execute('SELECT mac FROM seen_devices WHERE gateway=?', (gw.base,))}
         if not config[2]:
-            db.executemany('INSERT OR IGNORE INTO seen_devices (gateway, mac) VALUES (?,?)', ((gw.base, d['mac']) for d in devices))
+            db.executemany('INSERT OR IGNORE INTO seen_devices (gateway, mac) VALUES (?,?)', ((gw.base, d['mac']) for d in all_devices))
             db.execute('UPDATE webhook_config SET baseline=1 WHERE gateway=?', (gw.base,))
             return 'Monitorando; dispositivos atuais registrados como referência.'
         names = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gw.base,)))
