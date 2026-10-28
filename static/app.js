@@ -14,7 +14,7 @@ function deviceIcon(kind) {
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true');
   const path=document.createElementNS('http://www.w3.org/2000/svg','path'); path.setAttribute('d',kind==='wifi' ? 'M3 8.5a14 14 0 0 1 18 0M6 12a9.5 9.5 0 0 1 12 0M9 15.5a5 5 0 0 1 6 0M12 19h.01' : 'M4 4h16v10H4zM9 18h6M12 14v4'); svg.append(path); return svg;
 }
-const pageLabels={devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP IPv4',dns:'DNS da LAN',wifi:'Redes e SSIDs',reboot:'Reinício',logs:'Logs',notifications:'Notificações'};
+const pageLabels={devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP IPv4',dns:'DNS da LAN',wifi:'Redes e SSIDs',maintenance:'Importar / exportar',reboot:'Reinício',logs:'Logs',notifications:'Notificações'};
 function updateNavigation(page){
   document.querySelectorAll('.nav-item').forEach(el=>{const active=el.dataset.page===page&&(page!=='devices'||(el.dataset.networkView||'online')===(deviceView==='blocked'?'blocked':'online'));el.classList.toggle('active',active);if(active)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   $('#breadcrumb').textContent=page==='devices'&&deviceView==='blocked'?'Bloqueios Wi-Fi':pageLabels[page];
@@ -23,7 +23,7 @@ function setPage(page,view='online') {
   if(!Object.hasOwn(pageLabels,page))return;
   document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
   if(page==='devices')selectDeviceView(view);else updateNavigation(page);
-  if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi(); else if(page==='logs') loadLogs();
+  if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi(); else if(page==='logs') loadLogs(); else if(page==='maintenance') loadMaintenance();
 }
 document.addEventListener('click',event=>{document.querySelectorAll('.filter-menu[open]').forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});});
 document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.filter-menu[open]').forEach(menu=>{menu.open=false;menu.querySelector('summary').focus();});});
@@ -260,3 +260,67 @@ $('#log-level').addEventListener('change',renderLogs);
 $('#log-category').addEventListener('change',renderLogs);
 $('#log-search').addEventListener('input',renderLogs);
 $('#download-logs').addEventListener('click',()=>{if(!logRaw)return;const url=URL.createObjectURL(new Blob([logRaw],{type:'text/plain;charset=utf-8'})),link=node('a');link.href=url;link.download=`huawei-${logSource}-${new Date().toISOString().replace(/[:.]/g,'-')}.log`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+
+let pendingImportConfig=null,pendingImportPreview=null;
+function updateImportButtons(){
+  const selected=$('#import-devices').checked||$('#import-reservations').checked;
+  $('#preview-config').disabled=!pendingImportConfig;
+  $('#apply-config').hidden=!pendingImportPreview;
+  $('#apply-config').disabled=!pendingImportPreview||!selected;
+}
+function loadMaintenance(){
+  $('#import-status').textContent='Conecte-se ao gateway de destino para validar o arquivo.';
+  updateImportButtons();
+}
+$('#export-config').addEventListener('click',async event=>{
+  const button=event.currentTarget,status=$('#export-status');button.disabled=true;status.textContent='Preparando a exportação…';
+  try{
+    const config=await api('/api/maintenance/export'),blob=new Blob([JSON.stringify(config,null,2)],{type:'application/json;charset=utf-8'});
+    const url=URL.createObjectURL(blob),link=node('a');link.href=url;link.download=`gateway-manager-${new Date().toISOString().slice(0,10)}.json`;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+    status.textContent=`Arquivo exportado: ${config.devices.length} identificadores e ${config.reservations.length} reservas DHCP.`;
+  }catch(error){status.textContent=error.message;message(error.message,true)}finally{button.disabled=false}
+});
+$('#import-file').addEventListener('change',async event=>{
+  pendingImportConfig=null;pendingImportPreview=null;$('#import-preview').replaceChildren();$('#apply-config').hidden=true;
+  const file=event.currentTarget.files?.[0];
+  if(!file){$('#import-status').textContent='';updateImportButtons();return}
+  if(file.size>512*1024){$('#import-status').textContent='O arquivo excede o limite de 512 KiB.';updateImportButtons();return}
+  try{pendingImportConfig=JSON.parse(await file.text());$('#import-status').textContent=`Arquivo carregado (${Math.ceil(file.size/1024)} KiB). Valide a prévia antes de importar.`;}
+  catch{$('#import-status').textContent='Não foi possível ler o JSON. Selecione um arquivo de exportação válido.';}
+  updateImportButtons();
+});
+function renderImportPreview(preview){
+  const area=$('#import-preview');area.replaceChildren();
+  const summary=node('p','notice',`Destino: ${preview.target.model} · LAN ${preview.target.lan_ip} / ${preview.target.mask}. ${preview.devices.length} identificadores e ${preview.reservations.length} reservas no arquivo.`);area.append(summary);
+  const renderRows=(title,rows,format)=>{
+    const section=node('section','import-preview-section'),heading=node('h3','',title),list=node('ul','import-preview-list');section.append(heading,list);
+    if(!rows.length)list.append(node('li','muted','Nenhum item neste grupo.'));
+    for(const row of rows)list.append(node('li',row.action==='conflito'?'import-conflict':'',format(row)));
+    area.append(section);
+  };
+  renderRows('Identificadores por MAC',preview.devices,row=>`${row.mac.toUpperCase()} · ${row.name||'Sem nome'}${row.tag?' · '+row.tag:''} · ${row.action==='importar'?'novo':row.action==='existente'?'já cadastrado (preservado por padrão)':row.action}`);
+  renderRows('Reservas DHCP IPv4',preview.reservations,row=>`${row.mac.toUpperCase()} → ${row.ip} · ${row.enabled?'ativa':'desativada'} · ${row.action}${row.reason?' — '+row.reason:''}`);
+}
+$('#preview-config').addEventListener('click',async event=>{
+  const button=event.currentTarget;button.disabled=true;$('#import-status').textContent='Conferindo conflitos no gateway de destino…';
+  try{pendingImportPreview=await api('/api/maintenance/preview',{config:pendingImportConfig});renderImportPreview(pendingImportPreview);const conflicts=pendingImportPreview.reservations.filter(row=>row.action==='conflito').length;$('#import-status').textContent=`Prévia validada. ${conflicts} reserva(s) têm conflito e serão ignoradas.`;}
+  catch(error){pendingImportPreview=null;$('#import-preview').replaceChildren();$('#import-status').textContent=error.message;message(error.message,true)}
+  finally{button.disabled=false;updateImportButtons()}
+});
+$('#apply-config').addEventListener('click',async event=>{
+  if(!pendingImportConfig||!pendingImportPreview)return;
+  const importDevices=$('#import-devices').checked,importReservations=$('#import-reservations').checked;
+  if(!importDevices&&!importReservations){message('Selecione o que deseja importar.',true);return}
+  const reservationCount=importReservations?pendingImportPreview.reservations.filter(row=>row.action!=='igual'&&row.action!=='conflito').length:0;
+  const names=importDevices?pendingImportPreview.devices.length:0;
+  if(!confirm(`Aplicar no gateway conectado?\n\n${names} identificador(es) serão considerados e até ${reservationCount} reserva(s) serão gravadas no DHCP. Conflitos serão ignorados. Esta ação não é automática nem pode ser desfeita pelo aplicativo.`))return;
+  const button=event.currentTarget;button.disabled=true;$('#import-status').textContent='Aplicando os itens selecionados…';
+  try{
+    const result=await api('/api/maintenance/apply',{config:pendingImportConfig,import_devices:importDevices,import_reservations:importReservations,replace_names:$('#replace-names').checked,replace_reservations:$('#replace-reservations').checked,confirm:'IMPORTAR'});
+    const r=result.reservations;$('#import-status').textContent=`Concluído: ${result.devices.imported} identificador(es) importados, ${result.devices.preserved} preservado(s); ${r.added} reserva(s) criada(s), ${r.updated} atualizada(s), ${r.unchanged} já iguais e ${r.skipped} ignorada(s).`;
+    if(result.errors.length){const errors=node('ul','import-error-list');for(const item of result.errors)errors.append(node('li','',`${item.mac.toUpperCase()} · ${item.ip}: ${item.message}`));$('#import-preview').append(errors);}
+    message('Importação finalizada. Confira o resumo antes de sair.');
+    if(importReservations)await refreshReservations().catch(()=>{});if(importDevices)await refreshDevices().catch(()=>{});
+  }catch(error){$('#import-status').textContent=error.message;message(error.message,true)}finally{button.disabled=false;updateImportButtons()}
+});
+for(const selector of ['#import-devices','#import-reservations','#replace-names','#replace-reservations'])$(selector).addEventListener('change',updateImportButtons);

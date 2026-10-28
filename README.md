@@ -91,4 +91,8 @@ O login usa um cartão compacto de gateway: clique no modelo para abrir o painel
 
 O [plano de gerenciamento da rede interna](PLANO-GERENCIAMENTO-REDE-INTERNA.md) registra a inspeção de leitura do EG8145X6-10, as capacidades observadas e a expansão em fases. A navegação está agrupada em Rede interna, Wi-Fi, LAN e IPs, Segurança, Monitoramento e Manutenção. Bloqueios Wi-Fi abre a listagem de bloqueados existente. PPPoE, WAN e conexões externas não fazem parte do escopo de expansão.
 
+### Importar e exportar
+
+Em **Manutenção → Importar / exportar**, a exportação gera um JSON versão 1 com identificadores e categorias por MAC salvos no aplicativo e reservas DHCP IPv4 do gateway conectado. O arquivo não inclui credenciais, hooks, senhas Wi-Fi, logs ou uma cópia completa da configuração do roteador. Para migrar, conecte o app ao gateway de destino, selecione o arquivo e confira a prévia antes de escolher o que aplicar. Os identificadores ficam no banco local do app, vinculados ao MAC e ao novo gateway. Reservas são gravadas no DHCP do Huawei somente após confirmação; IP fora da LAN, ocupado por outro MAC ou em conflito com um cliente online é ignorado e informado. Itens existentes são preservados por padrão; substituí-los requer marcar as opções correspondentes. Cada reserva é revalidada e confirmada individualmente, então uma falha parcial aparece no resumo. O formato só aplica reservas nos modelos/firmwares com adaptador compatível.
+
 Teste de navegação: `node --test tests/navigation.test.cjs`.

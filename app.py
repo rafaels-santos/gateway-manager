@@ -1,4 +1,5 @@
 import base64
+import datetime
 import html
 import http.cookiejar
 import http.client
@@ -28,6 +29,9 @@ DHCP_PATH = '/html/bbsp/dhcpservercfg/dhcp2.asp'
 WIFI_PATH = '/html/amp/wlanbasic/WlanBasic.asp'
 LAN_DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement'
 DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress'
+PORTABLE_CONFIG_FORMAT = 'gateway-manager-network-config'
+PORTABLE_CONFIG_VERSION = 1
+DEVICE_TAGS = ('', 'IoT', 'Celulares', 'Computadores', 'Rede')
 DATA_DIR = Path(os.environ.get('DATA_DIR', str(ROOT / 'data')))
 # Observed on this gateway; override if the SSID assignments change.
 SSID_MAP = {'SSID1': '2,4 GHz', 'SSID2': '2,4 GHz · Convidados', 'SSID5': '5 GHz'}
@@ -405,10 +409,15 @@ class Gateway:
             mac = str(body.get('mac', '')).lower().strip()
             if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
                 raise GatewayError('Informe um MAC válido, por exemplo aa:bb:cc:dd:ee:ff.')
+            requested_enabled = body.get('enabled')
+            if 'enabled' in body and not isinstance(requested_enabled, bool):
+                raise GatewayError('Estado da reserva inválido.')
             rows, page = self.reservations()
             domain = body.get('id', '')
             if domain and domain not in [r['id'] for r in rows]:
                 raise GatewayError('Reserva não encontrada; atualize a lista.')
+            existing = next((row for row in rows if row['id'] == domain), None)
+            enabled = requested_enabled if requested_enabled is not None else (existing['enabled'] if existing else True)
             if any(r['id'] != domain and (r['ip'] == ip or r['mac'] == mac) for r in rows):
                 raise GatewayError('Este IP ou MAC já está reservado.')
             token = self.request('/html/ssmp/common/GetRandToken.asp', {}, xhr=True).strip()
@@ -417,10 +426,167 @@ class Gateway:
             action = 'set.cgi' if domain else 'add.cgi'
             target = domain or DOMAIN
             url = '/' + action + '?' + urllib.parse.urlencode({'x': target, 'RequestFile': PATH.lstrip('/')})
-            self.request(url, {'x.Yiaddr': ip, 'x.Chaddr': mac, **({'x.Enable': '1'} if not domain else {}), 'x.X_HW_Token': token})
+            self.request(url, {'x.Yiaddr': ip, 'x.Chaddr': mac, 'x.Enable': str(int(enabled)), 'x.X_HW_Token': token})
             updated, _ = self.reservations()
-            if not any(r['ip'] == ip and r['mac'] == mac for r in updated):
+            if not any(r['ip'] == ip and r['mac'] == mac and r['enabled'] == enabled for r in updated):
                 raise GatewayError('O gateway não confirmou a reserva. Verifique a interface original antes de tentar novamente.')
+
+def normalize_portable_config(value):
+    """Validate and normalize the portable, LAN-only configuration format."""
+    if not isinstance(value, dict) or value.get('format') != PORTABLE_CONFIG_FORMAT or value.get('version') != PORTABLE_CONFIG_VERSION:
+        raise GatewayError('Arquivo incompatível. Selecione uma exportação do Gateway Manager versão 1.')
+    devices, reservations = value.get('devices'), value.get('reservations')
+    if not isinstance(devices, list) or not isinstance(reservations, list) or len(devices) > 2000 or len(reservations) > 1024:
+        raise GatewayError('O arquivo precisa conter listas válidas de dispositivos e reservas.')
+    clean_devices, clean_reservations = [], []
+    seen_devices, seen_macs, seen_ips = set(), set(), set()
+    for row in devices:
+        if not isinstance(row, dict):
+            raise GatewayError('Há um identificador de dispositivo inválido no arquivo.')
+        mac = str(row.get('mac', '')).strip().lower()
+        name = row.get('name', '')
+        tag = row.get('tag', '')
+        if (not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac)
+                or int(mac[:2], 16) & 1 or mac == '00:00:00:00:00:00'
+                or not isinstance(name, str) or len(name) > 80
+                or any(ord(char) < 32 for char in name)
+                or not isinstance(tag, str) or tag not in DEVICE_TAGS
+                or (not name.strip() and not tag)):
+            raise GatewayError('Há um MAC, nome ou categoria inválidos no arquivo.')
+        if mac in seen_devices:
+            raise GatewayError('O arquivo contém MACs repetidos nos identificadores.')
+        seen_devices.add(mac)
+        clean_devices.append({'mac': mac, 'name': name.strip(), 'tag': tag})
+    for row in reservations:
+        if not isinstance(row, dict):
+            raise GatewayError('Há uma reserva inválida no arquivo.')
+        mac = str(row.get('mac', '')).strip().lower()
+        if (not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac)
+                or int(mac[:2], 16) & 1 or mac == '00:00:00:00:00:00'
+                or not isinstance(row.get('enabled', True), bool)):
+            raise GatewayError('Há um MAC ou estado de reserva inválido no arquivo.')
+        try:
+            address = ipaddress.IPv4Address(row.get('ip', ''))
+        except (ValueError, TypeError):
+            raise GatewayError('Há um endereço IPv4 inválido no arquivo.')
+        if address.is_unspecified or address.is_multicast or address.is_reserved:
+            raise GatewayError('O arquivo contém um IPv4 que não pode ser reservado.')
+        ip = str(address)
+        if mac in seen_macs or ip in seen_ips:
+            raise GatewayError('O arquivo contém MAC ou IP repetido nas reservas.')
+        seen_macs.add(mac); seen_ips.add(ip)
+        clean_reservations.append({'mac': mac, 'ip': ip, 'enabled': row.get('enabled', True)})
+    source = value.get('source') if isinstance(value.get('source'), dict) else {}
+    source = {key: source[key][:120] for key in ('model', 'label') if isinstance(source.get(key), str)}
+    exported_at = value.get('exported_at') if isinstance(value.get('exported_at'), str) else ''
+    return {'format': PORTABLE_CONFIG_FORMAT, 'version': PORTABLE_CONFIG_VERSION,
+            'exported_at': exported_at[:80], 'source': source,
+            'devices': clean_devices, 'reservations': clean_reservations}
+
+
+def export_portable_config(gateway):
+    with labels() as db:
+        saved = db.execute('SELECT mac,name FROM labels WHERE gateway=? ORDER BY mac', (gateway.base,)).fetchall()
+        tags = dict(db.execute('SELECT mac,tag FROM device_tags WHERE gateway=?', (gateway.base,)))
+    devices = [{'mac': mac, 'name': name or '', 'tag': tags.get(mac, '')}
+               for mac, name in saved if (name or '').strip() or tags.get(mac, '')]
+    reservations, _ = gateway.reservations()
+    return normalize_portable_config({'format': PORTABLE_CONFIG_FORMAT, 'version': PORTABLE_CONFIG_VERSION,
+            'exported_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'source': {'model': gateway.model_id, 'label': gateway.model_label},
+            'devices': devices,
+            'reservations': [{'mac': row['mac'], 'ip': row['ip'], 'enabled': row['enabled']} for row in reservations]})
+
+
+def preview_portable_config(gateway, raw_config):
+    config = normalize_portable_config(raw_config)
+    rows, _ = gateway.reservations()
+    current_by_mac = {row['mac']: row for row in rows}
+    current_by_ip = {row['ip']: row for row in rows}
+    current_devices = gateway.devices()
+    dhcp = gateway.dhcp_config()
+    network = ipaddress.IPv4Network((dhcp['lan_ip'], dhcp['mask']), strict=False)
+    with labels() as db:
+        existing_names = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
+        existing_tags = dict(db.execute('SELECT mac,tag FROM device_tags WHERE gateway=?', (gateway.base,)))
+    planned_devices = []
+    for row in config['devices']:
+        existing = row['mac'] in existing_names or row['mac'] in existing_tags
+        planned_devices.append({**row, 'action': 'existente' if existing else 'importar',
+                                'current_name': existing_names.get(row['mac'], ''),
+                                'current_tag': existing_tags.get(row['mac'], '')})
+    planned_reservations = []
+    for row in config['reservations']:
+        address = ipaddress.IPv4Address(row['ip'])
+        current = current_by_mac.get(row['mac'])
+        occupying = current_by_ip.get(row['ip'])
+        live = next((device for device in current_devices if device.get('ip') == row['ip'] and device.get('mac') != row['mac'] and device.get('status') == 'online'), None)
+        reason = ''
+        action = 'importar'
+        if address not in network or address in (network.network_address, network.broadcast_address) or address == ipaddress.IPv4Address(dhcp['lan_ip']):
+            action, reason = 'conflito', 'O IP não pertence à rede LAN utilizável deste gateway.'
+        elif occupying and occupying['mac'] != row['mac']:
+            action, reason = 'conflito', 'Este IP já está reservado para outro MAC no gateway atual.'
+        elif live:
+            action, reason = 'conflito', 'Outro dispositivo está online usando este IP.'
+        elif current and current['ip'] == row['ip'] and current['enabled'] == row['enabled']:
+            action, reason = 'igual', 'A reserva já existe com os mesmos dados.'
+        elif current:
+            action, reason = 'substituir', 'Este MAC já tem outra reserva; a troca exige confirmação adicional.'
+        planned_reservations.append({**row, 'action': action, 'reason': reason,
+                                     'current_ip': current['ip'] if current else '',
+                                     'current_enabled': current['enabled'] if current else None})
+    return {'config': config, 'target': {'model': gateway.model_label, 'lan_ip': dhcp['lan_ip'], 'mask': dhcp['mask']},
+            'devices': planned_devices, 'reservations': planned_reservations}
+
+
+def apply_portable_config(gateway, raw_config, *, import_devices, import_reservations,
+                          replace_names=False, replace_reservations=False):
+    if not all(isinstance(value, bool) for value in (import_devices, import_reservations, replace_names, replace_reservations)):
+        raise GatewayError('Opções de importação inválidas.')
+    if not import_devices and not import_reservations:
+        raise GatewayError('Selecione identificadores, reservas ou ambos para importar.')
+    preview = preview_portable_config(gateway, raw_config)
+    result = {'devices': {'imported': 0, 'preserved': 0}, 'reservations': {'added': 0, 'updated': 0, 'unchanged': 0, 'skipped': 0}, 'errors': []}
+    if import_devices:
+        with labels() as db:
+            for row in preview['devices']:
+                existing_name = db.execute('SELECT name FROM labels WHERE gateway=? AND mac=?', (gateway.base, row['mac'])).fetchone()
+                existing_tag = db.execute('SELECT tag FROM device_tags WHERE gateway=? AND mac=?', (gateway.base, row['mac'])).fetchone()
+                if (existing_name and existing_name[0] and not replace_names) or (existing_tag and existing_tag[0] and not replace_names):
+                    result['devices']['preserved'] += 1
+                    continue
+                if row['name']:
+                    db.execute('INSERT INTO labels (gateway,mac,name) VALUES (?,?,?) ON CONFLICT(gateway,mac) DO UPDATE SET name=excluded.name', (gateway.base, row['mac'], row['name']))
+                elif replace_names:
+                    db.execute('DELETE FROM labels WHERE gateway=? AND mac=?', (gateway.base, row['mac']))
+                if row['tag']:
+                    db.execute('INSERT INTO device_tags (gateway,mac,tag) VALUES (?,?,?) ON CONFLICT(gateway,mac) DO UPDATE SET tag=excluded.tag', (gateway.base, row['mac'], row['tag']))
+                elif replace_names:
+                    db.execute('DELETE FROM device_tags WHERE gateway=? AND mac=?', (gateway.base, row['mac']))
+                result['devices']['imported'] += 1
+    if import_reservations:
+        for row in preview['reservations']:
+            if row['action'] == 'conflito':
+                result['reservations']['skipped'] += 1
+                result['errors'].append({'mac': row['mac'], 'ip': row['ip'], 'message': row['reason']})
+                continue
+            if row['action'] == 'igual':
+                result['reservations']['unchanged'] += 1
+                continue
+            if row['action'] == 'substituir' and not replace_reservations:
+                result['reservations']['skipped'] += 1
+                result['errors'].append({'mac': row['mac'], 'ip': row['ip'], 'message': 'Reserva existente preservada; marque a opção para substituir.'})
+                continue
+            try:
+                current = next((item for item in gateway.reservations()[0] if item['mac'] == row['mac']), None)
+                gateway.save({'id': current['id'] if current else '', 'mac': row['mac'], 'ip': row['ip'], 'enabled': row['enabled']})
+                result['reservations']['updated' if current else 'added'] += 1
+            except (GatewayError, ValueError, TypeError) as error:
+                result['reservations']['skipped'] += 1
+                result['errors'].append({'mac': row['mac'], 'ip': row['ip'], 'message': str(error)})
+    return result
+
 
 EVENTS = {
     'connected': ('Novo dispositivo', 'Um novo dispositivo foi conectado ao roteador,\nNome: {name}\nIP: {ip}\nMAC: {mac}\n{link}', True),
@@ -684,6 +850,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {'connected': True, 'model': gw.model_id, 'model_label': gw.model_label, **getattr(gw,'identity',{})})
             except GatewayError as e: self.send_json(401, {'error': str(e)})
             return
+        if self.path == '/api/maintenance/export':
+            try:
+                gw = self.session()
+                with gw.lock: result = export_portable_config(gw)
+                self.send_json(200, result)
+            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            return
         if self.path == '/api/hooks':
             try:
                 gw=self.session()
@@ -763,10 +936,25 @@ class Handler(BaseHTTPRequestHandler):
             if not origin or urllib.parse.urlsplit(origin).netloc != self.headers.get('Host') or self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
                 raise GatewayError('Origem inválida.')
             length = int(self.headers.get('Content-Length', '0'))
-            if length <= 0 or length > (32768 if self.path=='/api/hooks' else 8192): raise GatewayError('Requisição inválida.')
+            limit = 524288 if self.path in ('/api/maintenance/preview', '/api/maintenance/apply') else 32768 if self.path=='/api/hooks' else 8192
+            if length <= 0 or length > limit: raise GatewayError('Requisição inválida ou arquivo de configuração maior que 512 KiB.')
             body = json.loads(self.rfile.read(length))
             if self.path == '/api/detect':
                 self.send_json(200,detect_gateway(str(body.get('address',''))))
+            elif self.path == '/api/maintenance/preview':
+                gw = self.session()
+                with gw.lock: result = preview_portable_config(gw, body.get('config'))
+                self.send_json(200, result)
+            elif self.path == '/api/maintenance/apply':
+                if body.get('confirm') != 'IMPORTAR': raise GatewayError('Confirme a importação antes de aplicar.')
+                gw = self.session()
+                with gw.lock:
+                    result = apply_portable_config(gw, body.get('config'),
+                        import_devices=body.get('import_devices', False),
+                        import_reservations=body.get('import_reservations', False),
+                        replace_names=body.get('replace_names', False),
+                        replace_reservations=body.get('replace_reservations', False))
+                self.send_json(200, result)
             elif self.path == '/api/login':
                 gw = create_gateway(body.get('model', Gateway.model_id), body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
                 with gw.lock: identity=session_identity(gw)

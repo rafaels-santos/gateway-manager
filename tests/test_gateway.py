@@ -1,6 +1,6 @@
 import unittest
 import tempfile
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import app
 from app import Gateway, GatewayError, DOMAIN
 
@@ -330,5 +330,74 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual((result[0]['hostname'],result[0]['name']), ('','Sala'))
     def test_public_address_rejected(self):
         with self.assertRaises(GatewayError): Gateway('8.8.8.8')
+
+    def test_editing_a_disabled_reservation_preserves_its_state(self):
+        gw=FakeGateway();row={'id':DOMAIN+'.1','mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.100.100','enabled':False}
+        updated={**row,'ip':'192.168.100.101'}
+        gw.reservations=Mock(side_effect=[([row],'page'),([updated],'page')])
+        with patch.object(gw,'request',return_value='a'*32) as request:
+            gw.save({'id':row['id'],'mac':row['mac'],'ip':updated['ip']})
+        self.assertEqual(request.call_args.args[1]['x.Enable'],'0')
+
+class PortableConfigTests(unittest.TestCase):
+    mac='aa:bb:cc:dd:ee:ff'
+    config={'format':app.PORTABLE_CONFIG_FORMAT,'version':1,'devices':[{'mac':mac,'name':'Sala','tag':'IoT'}],
+            'reservations':[{'mac':mac,'ip':'192.168.100.120','enabled':True}]}
+
+    def gateway(self):
+        gw=FakeGateway()
+        gw.current_reservations=[];gw.current_devices=[];gw.saved_reservations=[]
+        gw.reservations=lambda:(gw.current_reservations,'')
+        gw.devices=lambda:gw.current_devices
+        gw.dhcp_config=lambda:{'lan_ip':'192.168.100.254','mask':'255.255.255.0','start':'192.168.100.2','end':'192.168.100.253'}
+        gw.save=lambda body:gw.saved_reservations.append(body.copy())
+        return gw
+
+    def test_import_schema_rejects_duplicates(self):
+        duplicate={**self.config,'devices':[self.config['devices'][0],self.config['devices'][0]]}
+        with self.assertRaises(GatewayError):app.normalize_portable_config(duplicate)
+
+    def test_preview_detects_lan_conflict_without_writing(self):
+        gw=self.gateway();config={**self.config,'reservations':[{'mac':self.mac,'ip':'192.168.200.20','enabled':True}]}
+        with tempfile.TemporaryDirectory(dir=app.ROOT) as directory, patch.object(app,'DATA_DIR',app.Path(directory)):
+            plan=app.preview_portable_config(gw,config)
+        self.assertEqual(plan['reservations'][0]['action'],'conflito')
+        self.assertEqual(gw.saved_reservations,[])
+
+    def test_apply_imports_labels_and_explicitly_selected_reservations(self):
+        gw=self.gateway()
+        with tempfile.TemporaryDirectory(dir=app.ROOT) as directory, patch.object(app,'DATA_DIR',app.Path(directory)):
+            result=app.apply_portable_config(gw,self.config,import_devices=True,import_reservations=True)
+            with app.labels() as db:
+                self.assertEqual(db.execute('SELECT name FROM labels WHERE gateway=? AND mac=?',(gw.base,self.mac)).fetchone()[0],'Sala')
+                self.assertEqual(db.execute('SELECT tag FROM device_tags WHERE gateway=? AND mac=?',(gw.base,self.mac)).fetchone()[0],'IoT')
+        self.assertEqual(result['devices']['imported'],1)
+        self.assertEqual(result['reservations']['added'],1)
+        self.assertEqual(gw.saved_reservations[0]['ip'],'192.168.100.120')
+
+    def test_existing_entries_are_preserved_unless_replacement_selected(self):
+        gw=self.gateway();gw.current_reservations=[{'id':DOMAIN+'.1','mac':self.mac,'ip':'192.168.100.121','enabled':True}]
+        with tempfile.TemporaryDirectory(dir=app.ROOT) as directory, patch.object(app,'DATA_DIR',app.Path(directory)):
+            with app.labels() as db:db.execute('INSERT INTO labels VALUES (?,?,?)',(gw.base,self.mac,'Nome atual'))
+            preserved=app.apply_portable_config(gw,self.config,import_devices=True,import_reservations=True)
+            self.assertEqual(preserved['devices']['preserved'],1)
+            self.assertEqual(preserved['reservations']['skipped'],1)
+            self.assertEqual(gw.saved_reservations,[])
+            replaced=app.apply_portable_config(gw,self.config,import_devices=True,import_reservations=True,replace_names=True,replace_reservations=True)
+            with app.labels() as db:
+                self.assertEqual(db.execute('SELECT name FROM labels WHERE gateway=? AND mac=?',(gw.base,self.mac)).fetchone()[0],'Sala')
+        self.assertEqual(replaced['reservations']['updated'],1)
+        self.assertEqual(gw.saved_reservations[0]['id'],DOMAIN+'.1')
+
+    def test_export_contains_only_portable_network_data(self):
+        gw=self.gateway();gw.current_reservations=[{'id':DOMAIN+'.1','mac':self.mac,'ip':'192.168.100.120','enabled':True}]
+        with tempfile.TemporaryDirectory(dir=app.ROOT) as directory, patch.object(app,'DATA_DIR',app.Path(directory)):
+            with app.labels() as db:
+                db.execute('INSERT INTO labels VALUES (?,?,?)',(gw.base,self.mac,'Sala'))
+                db.execute('INSERT INTO device_tags VALUES (?,?,?)',(gw.base,self.mac,'IoT'))
+            exported=app.export_portable_config(gw)
+        self.assertEqual(set(exported),{'format','version','exported_at','source','devices','reservations'})
+        self.assertEqual(exported['devices'][0],{'mac':self.mac,'name':'Sala','tag':'IoT'})
+        self.assertNotIn('id',exported['reservations'][0])
 
 if __name__ == '__main__': unittest.main()

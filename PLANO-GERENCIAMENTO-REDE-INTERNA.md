@@ -29,9 +29,11 @@ O objetivo de gerenciamento completo depende das funções que o firmware e o pe
 | LAN e IPs | DHCP IPv4, Reservas de IP, DNS da LAN | Endereço LAN, IPv6, concessões e nomes DNS locais |
 | Segurança | Bloqueios Wi-Fi, atalho para a listagem existente | Isolamento de portas, capacidades de isolamento Wi-Fi, proteção PSK, acesso administrativo pela LAN |
 | Monitoramento | Logs, Notificações | Histórico de eventos e diagnósticos internos |
-| Manutenção | Reinício | Informações do equipamento e exportação das configurações do app/rede interna |
+| Manutenção | Importar/exportar identificadores por MAC e reservas DHCP IPv4; reinício | Informações do equipamento e expansão do arquivo portátil para outras funções da LAN |
 
 Apenas destinos funcionais aparecem como itens clicáveis. Não foram criados formulários vazios de funcionalidades futuras. Notificações permanece acima de Reinício. Em telas menores, a navegação permite rolagem horizontal; no desktop, os grupos ficam na lateral com rolagem própria.
+
+O arquivo portátil versão 1 leva identificadores/categorias locais por MAC e reservas DHCP IPv4, sem credenciais, hooks, chaves Wi-Fi, logs ou cópia completa da configuração. A importação exige prévia no gateway de destino, verifica conflitos de endereço e só grava reservas após confirmação; nomes/categorias permanecem locais ao app. Atualizações das funções exportadas devem manter a versão do schema e acrescentar testes de compatibilidade.
 
 ## Inventário e lacunas do app
 
