@@ -413,6 +413,7 @@ def mark_fixed_addresses(devices, reservations):
     reserved = {(row['mac'].lower(), row['ip']) for row in reservations if row.get('enabled', True)}
     for device in devices:
         device['ip_fixed'] = (device['mac'].lower(), device['ip']) in reserved
+        device['ip_static'] = device.get('ip_type', '').strip().lower() == 'static'
     return devices
 
 class Handler(BaseHTTPRequestHandler):
@@ -464,7 +465,9 @@ class Handler(BaseHTTPRequestHandler):
                         mark_fixed_addresses(rows, reservations)
                         reservations_available = True
                     except GatewayError:
-                        for row in rows: row['ip_fixed'] = False
+                        for row in rows:
+                            row['ip_fixed'] = False
+                            row['ip_static'] = row.get('ip_type', '').strip().lower() == 'static'
                         reservations_available = False
                 with labels() as db:
                     saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))

@@ -24,6 +24,7 @@ class GatewayTests(unittest.TestCase):
         devices = [{'mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.1.10','ip_type':'DHCP'}, {'mac':'aa:bb:cc:dd:ee:01','ip':'192.168.1.11','ip_type':'Static'}]
         app.mark_fixed_addresses(devices, [{'mac':'AA:BB:CC:DD:EE:FF','ip':'192.168.1.20'}])
         self.assertEqual([d['ip_fixed'] for d in devices], [False, False])
+        self.assertEqual([d['ip_static'] for d in devices], [False, True])
         app.mark_fixed_addresses(devices, [{'mac':'AA:BB:CC:DD:EE:FF','ip':'192.168.1.10'}])
         self.assertTrue(devices[0]['ip_fixed'])
         app.mark_fixed_addresses(devices, [])
