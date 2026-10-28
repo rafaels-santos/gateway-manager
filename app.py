@@ -64,7 +64,7 @@ class Gateway:
             with self.opener.open(req, timeout=12) as response:
                 if urllib.parse.urlsplit(path).path == '/login.cgi':
                     print('Diagnóstico HTTP: etapa=/login.cgi; status=%s; cookies=%s; Set-Cookie=%s' % (response.status, ','.join(c.name for c in self.cookies) or 'nenhum', bool(response.headers.get_all('Set-Cookie'))), flush=True)
-                return response.read(2_000_000).decode('utf-8', errors='replace')
+                return response.read(2_000_000).decode('utf-8-sig', errors='replace')
         except urllib.error.HTTPError as e:
             if urllib.parse.urlsplit(path).path in ('/login.cgi', '/index.asp'):
                 location = urllib.parse.urlsplit(e.headers.get('Location', '')).path or 'nenhum'

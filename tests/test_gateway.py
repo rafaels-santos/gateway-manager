@@ -29,6 +29,16 @@ class GatewayTests(unittest.TestCase):
         with self.assertRaises(GatewayError):
             gw.save({'id': DOMAIN + '.99', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.100.101'})
         self.assertEqual(gw.writes, [])
+    def test_utf8_bom_removed_from_gateway_token(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, limit): return b"\xef\xbb\xbf" + b"a" * 64
+        class Opener:
+            def open(self, req, timeout): return Response()
+        gw = Gateway('192.168.100.254')
+        gw.opener = Opener()
+        self.assertEqual(gw.request('/asp/GetRandCount.asp', {}, xhr=True), 'a' * 64)
     def test_public_address_rejected(self):
         with self.assertRaises(GatewayError): Gateway('8.8.8.8')
 
