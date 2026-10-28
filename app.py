@@ -293,6 +293,33 @@ class Gateway:
             updated = self.block_policy()
             if not updated['enabled'] or not updated['blacklist'] or not any(len(r)>=4 and r[1]==ssid and r[3].lower()==mac for r in updated['rules']): raise GatewayError('Bloqueio não confirmado. Confira o filtro no Huawei antes de tentar novamente.')
 
+    def blocked_clients(self, devices):
+        policy = self.block_policy()
+        if not policy['enabled'] or not policy['blacklist']: return []
+        by_mac = {d['mac']: d for d in devices}
+        result = []
+        for rule in policy['rules']:
+            if len(rule)<4: raise GatewayError('Formato de regra de bloqueio não reconhecido.')
+            domain, ssid, name, mac = rule[:4]
+            mac = mac.lower()
+            if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac): continue
+            port = ssid.replace('SSID-', 'SSID')
+            device = dict(by_mac.get(mac, {'mac':mac,'ip':'','hostname':name,'gateway_name':'','duration':'','ip_type':'','ipv6_enabled':''}))
+            device.update({'block_rule':domain,'status':'blocked','type':'wifi','port':port,'network':SSID_MAP.get(port,'Wi-Fi · rede não identificada')})
+            result.append(device)
+        return result
+
+    def unblock_client(self, body):
+        with self.lock:
+            domain = str(body.get('rule',''))
+            mac = str(body.get('mac','')).lower()
+            if body.get('confirm') != 'DESBLOQUEAR' or not re.fullmatch(r'InternetGatewayDevice\.X_HW_Security\.WLANMacFilter\.\d+', domain): raise GatewayError('Regra ou confirmação inválida.')
+            rules = self.block_policy()['rules']
+            if not any(len(r)>=4 and r[0]==domain and r[3].lower()==mac for r in rules): raise GatewayError('Regra não encontrada; atualize a lista.')
+            path='/html/bbsp/wlanmacfilter/wlanmacfilter.asp'
+            self.request('/del.cgi?'+urllib.parse.urlencode({'RequestFile':path.lstrip('/')}), {domain:'','x.X_HW_Token':self.config_token()}, referer=path)
+            if any(r[0]==domain for r in self.block_policy()['rules']): raise GatewayError('A remoção não foi confirmada pelo Huawei; confira no painel antes de tentar novamente.')
+
     def reservations(self):
         page = self.reservations_page()
         # Firmware serializes reservations as constructors in JavaScript.
@@ -514,13 +541,19 @@ class Handler(BaseHTTPRequestHandler):
                             row['ip_fixed'] = False
                             row['ip_static'] = row.get('ip_type', '').strip().lower() == 'static'
                         reservations_available = False
+                    try:
+                        blocked = gateway.blocked_clients(rows)
+                        blocked_available = True
+                    except GatewayError:
+                        blocked = []
+                        blocked_available = False
                 with labels() as db:
                     saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
                     tags = dict(db.execute('SELECT mac,tag FROM device_tags WHERE gateway=?', (gateway.base,)))
-                for row in rows:
+                for row in rows + blocked:
                     row['name'] = saved.get(row['mac'], '')
                     row['tag'] = tags.get(row['mac'], '')
-                self.send_json(200, {'devices': rows, 'reservations_available': reservations_available})
+                self.send_json(200, {'devices': rows, 'blocked': blocked, 'blocked_available': blocked_available, 'reservations_available': reservations_available})
             except GatewayError as e: self.send_json(400, {'error': str(e)})
             return
         if self.path == '/api/reservations':
@@ -565,6 +598,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label}, key)
             elif self.path == '/api/block':
                 self.session().block_client(body); self.send_json(200, {'ok': True})
+            elif self.path == '/api/unblock':
+                self.session().unblock_client(body); self.send_json(200, {'ok': True})
             elif self.path == '/api/reservation':
                 self.session().save(body); self.send_json(200, {'ok': True})
             elif self.path in ('/api/dhcp', '/api/dns'):

@@ -1,6 +1,6 @@
 const $ = s => document.querySelector(s);
 let reservations = [], deviceTimer = null, loadingDevices = false, webhookEditing = false, currentDevice = null, deviceView = 'online', pendingDevice = new URLSearchParams(location.search).get('device')?.toLowerCase() || '';
-const zoneFilters = {wifi:{network:'',tag:'',name:''},lan:{network:'',tag:'',name:''},offline:{network:'',tag:'',name:''}};
+const zoneFilters = {wifi:{network:'',tag:'',name:''},lan:{network:'',tag:'',name:''},offline:{network:'',tag:'',name:''},blocked:{network:'',tag:'',name:''}};
 async function api(path, body) {
   const options = body === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)};
   const response = await fetch(path, options);
@@ -21,9 +21,10 @@ function setPage(page) {
   if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi();
 }
 document.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page)));
-function selectDeviceView(view){ deviceView=view; for(const state of ['online','offline']){ const active=state===view; $(`#show-${state}`).classList.toggle('active',active); $(`#show-${state}`).setAttribute('aria-pressed',String(active)); } document.querySelectorAll('[data-device-view]').forEach(panel=>panel.hidden=panel.dataset.deviceView!==view); }
+function selectDeviceView(view){ deviceView=view; for(const state of ['online','offline','blocked']){ const active=state===view; $(`#show-${state}`).classList.toggle('active',active); $(`#show-${state}`).setAttribute('aria-pressed',String(active)); } document.querySelectorAll('[data-device-view]').forEach(panel=>panel.hidden=panel.dataset.deviceView!==view); }
 $('#show-online').addEventListener('click',()=>selectDeviceView('online'));
 $('#show-offline').addEventListener('click',()=>selectDeviceView('offline'));
+$('#show-blocked').addEventListener('click',()=>selectDeviceView('blocked'));
 async function refreshDevices() {
   if (loadingDevices || $('#dashboard').hidden || document.querySelector('.filter-menu[open]')) return;
   loadingDevices=true;
@@ -34,7 +35,7 @@ async function refreshDevices() {
     const lan=online.filter(d=>d.type==='lan'), wifi=online.filter(d=>d.type==='wifi'), offline=data.devices.filter(d=>d.status==='offline');
     $('#total-count').textContent=online.length; $('#wifi-count').textContent=wifi.length; $('#lan-count').textContent=lan.length;
     const target=$('#device-sections'); target.replaceChildren();
-    for(const [title, subtitle, devices, state, zone] of [['Wi-Fi','Conexões sem fio',wifi,'online','wifi'],['LAN','Conexões com fio',lan,'online','lan'],['Dispositivos offline','Dispositivos informados pelo gateway como desconectados',offline,'offline','offline']]) {
+    for(const [title, subtitle, devices, state, zone] of [['Wi-Fi','Conexões sem fio',wifi,'online','wifi'],['LAN','Conexões com fio',lan,'online','lan'],['Dispositivos offline','Dispositivos informados pelo gateway como desconectados',offline,'offline','offline'],['Dispositivos bloqueados','Regras ativas da lista de bloqueio Wi-Fi',data.blocked || [],'blocked','blocked']]) {
       const panel=node('div','panel device-panel'); const head=node('div','panel-header');
       panel.dataset.deviceView=state; panel.hidden=state!==deviceView;
       const heading=node('div'); heading.append(node('h2','',title),node('p','muted',subtitle));
@@ -51,14 +52,15 @@ async function refreshDevices() {
       devices.forEach(d=>{
         const card=node('button','device-card'); card.type='button';
         const top=node('div','device-card-top'), icon=node('span','device-icon'); icon.append(deviceIcon(d.type));
-        top.append(icon,node('span',state==='offline'?'offline-pill':'online-pill',state==='offline'?'● Offline':'● Online')); const title=node('strong',`device-card-name${d.name ? ' ip-fixed' : ''}`,d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome');
+        top.append(icon,node('span',state==='blocked'?'blocked-pill':state==='offline'?'offline-pill':'online-pill',state==='blocked'?'● Bloqueado':state==='offline'?'● Offline':'● Online')); const title=node('strong',`device-card-name${d.name ? ' ip-fixed' : ''}`,d.name || d.gateway_name || d.hostname || 'Dispositivo sem nome');
         card.append(top,title,node('span','device-card-network',d.network || d.port || 'Rede não identificada'),node('span',`device-card-ip${d.ip_fixed || d.ip_static ? ' ip-fixed' : ''}`,`${d.ip || 'Sem IP'}${d.ip_fixed ? ' · Fixo' : d.ip_static ? ' · Estático' : ''}`),node('span','device-card-mac',d.mac.toUpperCase()),node('span','device-card-open','Ver detalhes →'));
         if(d.tag) card.insertBefore(node('span','device-tag',d.tag),card.lastChild);
         card.addEventListener('click',()=>openDevice(d)); grid.append(card); entries.push({card,device:d});
       });
-      function applyFilters(){const f=zoneFilters[zone]; let shown=0; for(const {card,device:d} of entries){const network=d.network || ''; const matchNetwork=!f.network || (f.network==='guest' ? network.includes('Convidados') : f.network==='2.4' ? network.includes('2,4 GHz') : network.includes('5 GHz')); const matchTag=!f.tag || (f.tag==='none' ? !d.tag : d.tag===f.tag); const named=Boolean((d.name || '').trim()); const matchName=!f.name || (f.name==='named' ? named : !named); card.hidden=!(matchNetwork && matchTag && matchName); if(!card.hidden)shown++} count.textContent=`${shown} de ${devices.length} ${state}`; empty.hidden=shown>0; empty.textContent=devices.length?'Nenhum dispositivo corresponde aos filtros.':state==='offline'?'Nenhum dispositivo offline informado pelo gateway.':'Nenhum dispositivo conectado nesta rede.'; }
+      function applyFilters(){const f=zoneFilters[zone]; let shown=0; for(const {card,device:d} of entries){const network=d.network || ''; const matchNetwork=!f.network || (f.network==='guest' ? network.includes('Convidados') : f.network==='2.4' ? network.includes('2,4 GHz') : network.includes('5 GHz')); const matchTag=!f.tag || (f.tag==='none' ? !d.tag : d.tag===f.tag); const named=Boolean((d.name || '').trim()); const matchName=!f.name || (f.name==='named' ? named : !named); card.hidden=!(matchNetwork && matchTag && matchName); if(!card.hidden)shown++} count.textContent=`${shown} de ${devices.length} ${state}`; empty.hidden=shown>0; empty.textContent=devices.length?'Nenhum dispositivo corresponde aos filtros.':state==='blocked'?'Nenhum bloqueio ativo informado pelo gateway.':state==='offline'?'Nenhum dispositivo offline informado pelo gateway.':'Nenhum dispositivo conectado nesta rede.'; }
       applyFilters(); panel.append(grid); target.append(panel);
     }
+    $('#blocked-error').hidden=data.blocked_available!==false; $('#blocked-error').textContent=data.blocked_available===false?'Não foi possível consultar os bloqueios do gateway. A lista de bloqueados está indisponível.':'';
     if(pendingDevice){ const linked=data.devices.find(d=>d.mac===pendingDevice); pendingDevice=''; if(linked) openDevice(linked); else message('Dispositivo não encontrado na lista atual do gateway.',true); }
     $('#devices-error').hidden=data.reservations_available!==false; if(data.reservations_available===false) $('#devices-error').textContent='Não foi possível verificar as reservas; alguns IPs fixos podem não estar destacados.'; $('#last-update').textContent=`Atualizado às ${new Date().toLocaleTimeString('pt-BR')}`;
   } catch(err) { $('#devices-error').textContent=err.message; $('#devices-error').hidden=false; }
@@ -67,8 +69,9 @@ async function refreshDevices() {
 function detailItem(label,value){ const item=node('div','detail-item'); item.append(node('span','muted',label),node('strong','',value || 'Não informado')); return item; }
 function formatDuration(value){ const match=/^(\d+):(\d+)$/.exec(value || ''); return match ? `${match[1]} h ${match[2]} min` : value || 'Não informado'; }
 async function openDevice(device){
-  currentDevice=device; $('#block-client').disabled=device.type!=='wifi'; $('#detail-title').textContent=device.name || device.gateway_name || device.hostname || 'Dispositivo sem nome'; $('#detail-title').classList.toggle('ip-fixed',Boolean(device.name));
-  $('#detail-subtitle').textContent=`${device.network || device.port || 'Rede não identificada'} · ${device.status === 'online' ? 'Online' : 'Offline'}`;
+  currentDevice=device; $('#block-client').disabled=device.type!=='wifi'; $('#block-client').textContent=device.block_rule?'Desbloquear cliente':'Bloquear cliente Wi-Fi'; $('#detail-title').textContent=device.name || device.gateway_name || device.hostname || 'Dispositivo sem nome'; $('#detail-title').classList.toggle('ip-fixed',Boolean(device.name));
+  $('#detail-subtitle').textContent=`${device.network || device.port || 'Rede não identificada'} · ${device.block_rule ? 'Bloqueado' : device.status === 'online' ? 'Online' : 'Offline'}`;
+  $('#detail-subtitle').classList.toggle('blocked-pill',Boolean(device.block_rule));
   const info=$('#detail-info'); info.replaceChildren();
   for(const [label,value] of [['Nome no gateway',device.gateway_name || device.hostname],['IP atual',device.ip ? `${device.ip}${device.ip_fixed ? ' · Fixo' : device.ip_static ? ' · Estático' : ''}` : ''],['Endereço MAC',device.mac.toUpperCase()],['Rede',device.network],['Porta',device.port],['Tempo conectado',formatDuration(device.duration)],['Tipo de IP',device.ip_type],['IPv6',device.ipv6_enabled === '1' ? 'Ativo' : device.ipv6_enabled === '0' ? 'Não informado pelo cliente' : 'Não informado']]) { const item=detailItem(label,value); if(label==='IP atual' && (device.ip_fixed || device.ip_static)) item.querySelector('strong').classList.add('ip-fixed'); info.append(item); }
   $('#detail-name').value=device.name || ''; $('#detail-tag').value=device.tag || ''; $('#detail-ip').value=device.ip || ''; $('#detail-ip-submit').disabled=true; $('#detail-ip-status').textContent='Consultando reservas...';
@@ -143,4 +146,4 @@ $('#reboot-button').addEventListener('click',()=>{$('#reboot-confirm').value='';
 $('#reboot-cancel').addEventListener('click',()=>$('#reboot-dialog').close());
 $('#reboot-form').addEventListener('submit',async e=>{e.preventDefault(); if($('#reboot-confirm').value!=='REINICIAR'){message('Digite REINICIAR para confirmar.',true);return} const button=e.submitter; button.disabled=true; try{await api('/api/reboot',{confirm:'REINICIAR'}); $('#reboot-dialog').close(); $('#reboot-status').textContent='Comando enviado. Aguarde a retomada da rede e conecte-se novamente.'; message('Comando de reinício enviado.');}catch(err){message(err.message,true)}finally{button.disabled=false}});
 
-$('#block-client').addEventListener('click',async e=>{const d=currentDevice;if(!d||d.type!=='wifi')return;if(!confirm(`Bloquear ${d.name||d.hostname||d.mac.toUpperCase()} na rede ${d.port}? O dispositivo perderá acesso. Se o filtro estiver desativado e sem regras, ele será ativado. Para desfazer, use o painel Huawei.`))return;const button=e.currentTarget;button.disabled=true;try{await api('/api/block',{mac:d.mac,confirm:'BLOQUEAR',activate:true});message('Regra de bloqueio confirmada pelo Huawei.');}catch(err){message(err.message,true)}finally{button.disabled=false}});
+$('#block-client').addEventListener('click',async e=>{const d=currentDevice;if(!d||d.type!=='wifi')return;if(d.block_rule){if(!confirm(`Desbloquear ${d.name||d.hostname||d.mac.toUpperCase()} na rede ${d.port}?`))return;const button=e.currentTarget;button.disabled=true;try{await api('/api/unblock',{mac:d.mac,rule:d.block_rule,confirm:'DESBLOQUEAR'});$('#device-dialog').close();message('Regra de bloqueio removida e confirmada pelo Huawei.');await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}return}if(!confirm(`Bloquear ${d.name||d.hostname||d.mac.toUpperCase()} na rede ${d.port}? O dispositivo perderá acesso. Se o filtro estiver desativado e sem regras, ele será ativado. Para desfazer, use a aba Bloqueados.`))return;const button=e.currentTarget;button.disabled=true;try{await api('/api/block',{mac:d.mac,confirm:'BLOQUEAR',activate:true});message('Regra de bloqueio confirmada pelo Huawei.');$('#device-dialog').close();await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}});

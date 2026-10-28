@@ -20,6 +20,26 @@ class FakeGateway(Gateway):
         return self.page
 
 class GatewayTests(unittest.TestCase):
+    def test_blocked_clients_includes_clients_missing_from_device_list(self):
+        gw=FakeGateway()
+        gw.block_policy=lambda:{'enabled':True,'blacklist':True,'rules':[['InternetGatewayDevice.X_HW_Security.WLANMacFilter.1','SSID-2','Phone','aa:bb:cc:dd:ee:ff']]}
+        result=gw.blocked_clients([])
+        self.assertEqual((result[0]['mac'],result[0]['status'],result[0]['port']),('aa:bb:cc:dd:ee:ff','blocked','SSID2'))
+        gw.block_policy=lambda:{'enabled':False,'blacklist':True,'rules':[]}
+        self.assertEqual(gw.blocked_clients([]),[])
+    def test_unblock_removes_only_selected_rule_and_verifies(self):
+        gw=FakeGateway(); domain='InternetGatewayDevice.X_HW_Security.WLANMacFilter.1'
+        policies=iter([{'rules':[[domain,'SSID-1','Phone','aa:bb:cc:dd:ee:ff']]},{'rules':[]}])
+        gw.block_policy=lambda:next(policies);gw.config_token=lambda:'a'*32
+        with patch.object(gw,'request') as write:
+            gw.unblock_client({'rule':domain,'mac':'aa:bb:cc:dd:ee:ff','confirm':'DESBLOQUEAR'})
+        self.assertEqual(write.call_args.args[1],{domain:'','x.X_HW_Token':'a'*32})
+    def test_unblock_rejects_different_mac_without_writes(self):
+        gw=FakeGateway();domain='InternetGatewayDevice.X_HW_Security.WLANMacFilter.1'
+        gw.block_policy=lambda:{'rules':[[domain,'SSID-1','Phone','aa:bb:cc:dd:ee:ff']]}
+        with patch.object(gw,'request') as write:
+            with self.assertRaises(GatewayError):gw.unblock_client({'rule':domain,'mac':'aa:bb:cc:dd:ee:00','confirm':'DESBLOQUEAR'})
+            write.assert_not_called()
     def test_block_refuses_whitelist_and_existing_disabled_rules(self):
         gw=FakeGateway()
         gw.devices=lambda:[{'mac':'aa:bb:cc:dd:ee:ff','type':'wifi','port':'SSID1'}]
