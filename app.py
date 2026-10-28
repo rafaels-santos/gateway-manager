@@ -1,4 +1,5 @@
 import base64
+import html
 import http.cookiejar
 import http.client
 import ipaddress
@@ -68,6 +69,7 @@ def parse_constructors(page, name):
 class Gateway:
     model_id = 'huawei-eg8145x6-10'
     model_label = 'Huawei EG8145X6-10'
+    detection_models = ['EG8145X6-10']
     def __init__(self, address):
         address = address.strip()
         if '://' not in address:
@@ -86,7 +88,7 @@ class Gateway:
         self.lock = threading.RLock()
         self.credentials = None
 
-    def request(self, path, data=None, *, referer='/', xhr=False):
+    def request(self, path, data=None, *, referer='/', xhr=False, timeout=12, max_redirects=3):
         payload = None if data is None else urllib.parse.urlencode(data).encode('utf-8')
         headers = {'User-Agent': 'Mozilla/5.0', 'Referer': self.base + referer, 'Accept': 'text/html,*/*'}
         if xhr:
@@ -95,7 +97,7 @@ class Gateway:
             headers['Origin'] = self.base
         req = urllib.request.Request(self.base + path, data=payload, headers=headers)
         try:
-            with self.opener.open(req, timeout=12) as response:
+            with self.opener.open(req, timeout=timeout) as response:
                 if urllib.parse.urlsplit(path).path == '/login.cgi':
                     print('Diagnóstico HTTP: etapa=/login.cgi; status=%s; cookies=%s; Set-Cookie=%s' % (response.status, ','.join(c.name for c in self.cookies) or 'nenhum', bool(response.headers.get_all('Set-Cookie'))), flush=True)
                 return response.read(2_000_000).decode('utf-8-sig', errors='replace')
@@ -103,8 +105,9 @@ class Gateway:
             if urllib.parse.urlsplit(path).path in ('/login.cgi', '/index.asp'):
                 location = urllib.parse.urlsplit(e.headers.get('Location', '')).path or 'nenhum'
                 print('Diagnóstico HTTP: etapa=%s; status=%s; destino=%s; cookies=%s; Set-Cookie=%s' % (urllib.parse.urlsplit(path).path, e.code, location, ','.join(c.name for c in self.cookies) or 'nenhum', bool(e.headers.get_all('Set-Cookie'))), flush=True)
-            if e.code in (301, 302, 303) and e.headers.get('Location', '').startswith('/'):
-                return self.request(e.headers['Location'])
+            if e.code in (301, 302, 303) and e.headers.get('Location', '').startswith('/') and not e.headers.get('Location', '').startswith('//'):
+                if max_redirects<=0: raise GatewayError('O gateway excedeu o limite de redirecionamentos.')
+                return self.request(e.headers['Location'],timeout=timeout,max_redirects=max_redirects-1)
             stage = {'/': 'página inicial', '/asp/GetRandCount.asp': 'token de login', '/login.cgi': 'autenticação', '/index.asp': 'verificação da sessão', PATH: 'leitura das reservas', '/html/ssmp/common/GetRandToken.asp': 'token de configuração'}.get(urllib.parse.urlsplit(path).path, 'operação de reserva')
             raise GatewayError('Gateway recusou a etapa %s (HTTP %s).' % (stage, e.code))
         except (urllib.error.URLError, TimeoutError, OSError) as e:
@@ -603,6 +606,51 @@ def mark_fixed_addresses(devices, reservations):
     return devices
 
 # Register only adapters that have been implemented and validated.
+def parse_gateway_identity(page):
+    # Only use explicit identity fields or the page title, never a remembered IP/model mapping.
+    page=html.unescape(re.sub(r'\\x([0-9a-fA-F]{2})',lambda m:chr(int(m[1],16)),page))
+    def field(keys):
+        match=re.search(r"(?:var\s+)?(?:"+keys+r")\s*[:=]\s*['\"]([^'\"\r\n]{1,100})['\"]",page,re.I)
+        return match[1].strip() if match else None
+    title=re.search(r'<title[^>]*>([^<]{1,120})</title>',page,re.I)
+    model=field(r'ProductClass|ProductName|ModelName|ModelNumber|product_name|model_name')
+    if model:
+        found=re.search(r'\b((?:EG|HG|HS)\d{4}[A-Z0-9]*(?:-[A-Z0-9]+)?)\b',model,re.I)
+        model=found[1].upper() if found else model
+    elif title:
+        found=re.search(r'\b((?:EG|HG|HS)\d{4}[A-Z0-9]*(?:-[A-Z0-9]+)?)\b',title[1],re.I)
+        model=found[1].upper() if found else None
+    firmware=field(r'SWVersion|SoftwareVersion|FirmwareVersion|SWVer|firmware_version|software_version')
+    hardware=field(r'HWVersion|HardwareVersion|HWVer|hardware_version')
+    text=re.sub(r'<[^>]+>',' ',page)
+    if not firmware:
+        found=re.search(r'\b(?:SWVer|Software Version|Firmware Version)\s*[:：]?\s*(V?\d[\w.-]{2,80})',text,re.I)
+        if found: firmware=found[1]
+    if not hardware:
+        found=re.search(r'\b(?:HWVer|Hardware Version)\s*[:：]?\s*([A-Za-z0-9][\w.-]{1,80})',text,re.I)
+        if found: hardware=found[1]
+    adapter=next((key for key,cls in GATEWAY_ADAPTERS.items() if model and model.casefold() in [m.casefold() for m in getattr(cls,'detection_models',[])]),None)
+    return {'detected':bool(model),'adapter_id':adapter,'supported':adapter is not None,'model':model,'firmware':firmware,'hardware':hardware}
+
+def detect_gateway(address):
+    # A fresh cookie jar and GET only: detection never signs in or reuses an admin session.
+    probe=Gateway(address)
+    result=parse_gateway_identity(probe.request('/',timeout=5,max_redirects=1))
+    result['message']=('Modelo detectado e compatível.' if result['supported'] else 'Modelo detectado sem integração disponível.' if result['detected'] else 'Modelo não divulgado na página pública. Selecione manualmente.')
+    return result
+
+def session_identity(gateway):
+    # This firmware exposes its software version in the User Log header after authentication.
+    identity={'firmware':None,'hardware':None}
+    try:
+        header='\n'.join(gateway.logs()['raw'].splitlines()[:8])
+        for key,label in [('firmware','SWVer'),('hardware','HWVer')]:
+            match=re.search(r'^'+label+r':([^;\r\n]{1,100})',header,re.M)
+            if match: identity[key]=match[1].strip()
+    except GatewayError: pass
+    gateway.identity=identity
+    return identity
+
 GATEWAY_ADAPTERS = {Gateway.model_id: Gateway}
 
 def create_gateway(model_id, address):
@@ -633,7 +681,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 gw = self.session()
                 with gw.lock: gw.devices()
-                self.send_json(200, {'connected': True, 'model': gw.model_id, 'model_label': gw.model_label})
+                self.send_json(200, {'connected': True, 'model': gw.model_id, 'model_label': gw.model_label, **getattr(gw,'identity',{})})
             except GatewayError as e: self.send_json(401, {'error': str(e)})
             return
         if self.path == '/api/hooks':
@@ -717,8 +765,11 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get('Content-Length', '0'))
             if length <= 0 or length > (32768 if self.path=='/api/hooks' else 8192): raise GatewayError('Requisição inválida.')
             body = json.loads(self.rfile.read(length))
-            if self.path == '/api/login':
+            if self.path == '/api/detect':
+                self.send_json(200,detect_gateway(str(body.get('address',''))))
+            elif self.path == '/api/login':
                 gw = create_gateway(body.get('model', Gateway.model_id), body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
+                with gw.lock: identity=session_identity(gw)
                 parsed_origin = urllib.parse.urlsplit(origin)
                 if parsed_origin.scheme not in ('http', 'https') or not parsed_origin.hostname or parsed_origin.username or parsed_origin.password or parsed_origin.path or parsed_origin.query or parsed_origin.fragment:
                     raise GatewayError('Endereço do aplicativo inválido.')
@@ -727,7 +778,7 @@ class Handler(BaseHTTPRequestHandler):
                 key = secrets.token_urlsafe(32)
                 with LOCK: SESSIONS[key] = gw
                 start_monitor(gw)
-                self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label}, key)
+                self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label, **identity}, key)
             elif self.path == '/api/block':
                 self.session().block_client(body); self.send_json(200, {'ok': True})
             elif self.path == '/api/unblock':

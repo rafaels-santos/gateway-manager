@@ -77,3 +77,10 @@ Ao criar um hook, escolha o serviço desejado. O formato genérico aceita um end
 Cada evento tem ativação e texto independentes: novo MAC online, desconexão, mudança de IP e as duas últimas condições para clientes com regra de bloqueio. Somente novo dispositivo fica ativo por padrão. Se eventos gerais e específicos estiverem ativos, ambos serão enviados. Regras inativas são identificadas pelo campo `{block_active}`. Mudança de IP significa diferença da última leitura, não desvio de reserva DHCP. O monitor consulta a cada 30 segundos; não representa captura em tempo real. A primeira observação cria referência sem disparar eventos de transição.
 
 Variáveis: `{name}`, `{ip}`, `{previous_ip}`, `{mac}`, `{link}`, `{block_active}`, `{event}`. Mensagens aceitam até 1.500 caracteres. O botão de teste usa as configurações já salvas do hook. Novos eventos dependem de uma sessão ativa com o gateway.
+
+
+### Detecção na tela de login
+
+Ao preencher um IP, o app consulta a página inicial do gateway com GET e uma sessão HTTP separada, sem enviar usuário ou senha. O modelo compatível é selecionado automaticamente quando identificado; os campos de modelo/firmware/hardware vêm de títulos ou metadados explícitos da resposta, nunca de uma associação fixa com o IP. Modelos não reconhecidos permanecem disponíveis para seleção manual entre as integrações cadastradas.
+
+Firmware pode não ser divulgado antes de autenticar. No Huawei, após login, o app tenta ler SWVer/HWVer do cabeçalho de User Logs e exibe o firmware junto ao modelo no painel. Se essa leitura não estiver disponível, a conexão continua sem uma versão presumida. A detecção limita tempo e redirecionamentos e aceita somente os mesmos IPs privados permitidos no login. Um novo adaptador pode declarar seus nomes exatos de identificação pública em `detection_models`.
