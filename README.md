@@ -1,6 +1,6 @@
 # Gateway Manager
 
-Protótipo da tela inicial para o Huawei EG8145X6-10. A integração com o firmware V5R024C10S106 ainda não foi implementada. O botão Conectar não envia nem armazena credenciais; DHCP, DNS, dispositivos e reservas ainda não funcionam.
+Protótipo da tela inicial para gateway router. 
 
 ## Instalar no ZimaOS remoto
 
