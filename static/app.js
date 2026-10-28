@@ -9,6 +9,10 @@ async function api(path, body) {
 }
 function message(text, error=false) { $('#message').textContent=text; $('#message').className=error?'toast error':'toast'; }
 function node(tag, cls, text) { const el=document.createElement(tag); if(cls) el.className=cls; if(text!==undefined) el.textContent=text; return el; }
+function deviceIcon(kind) {
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true');
+  const path=document.createElementNS('http://www.w3.org/2000/svg','path'); path.setAttribute('d',kind==='wifi' ? 'M3 8.5a14 14 0 0 1 18 0M6 12a9.5 9.5 0 0 1 12 0M9 15.5a5 5 0 0 1 6 0M12 19h.01' : 'M4 4h16v10H4zM9 18h6M12 14v4'); svg.append(path); return svg;
+}
 function setPage(page) {
   document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
   document.querySelectorAll('.nav-item').forEach(el=>{ const active=el.dataset.page===page; el.classList.toggle('active',active); if(active) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); });
@@ -31,7 +35,7 @@ async function refreshDevices() {
       const heading=node('div'); heading.append(node('h2','',title),node('p','muted',subtitle)); head.append(heading,node('span','count',`${devices.length} online`)); panel.append(head);
       if(!devices.length) panel.append(node('p','empty','Nenhum dispositivo conectado nesta rede.'));
       devices.forEach(d=>{
-        const row=node('div','device-row'); const identity=node('div','device-identity'); const icon=node('span','device-icon',d.type==='wifi'?'◉':'▣');
+        const row=node('div','device-row'); const identity=node('div','device-identity'); const icon=node('span','device-icon'); icon.append(deviceIcon(d.type));
         const info=node('div'); info.append(node('strong','',d.gateway_name || d.hostname || 'Dispositivo sem nome'),node('small','muted',`${d.port || '—'} · Online`)); identity.append(icon,info);
         const network=node('div','network'); network.append(node('span','',d.ip || 'Sem IP'),node('small','muted',d.mac));
         const form=node('form','name-form'); const label=node('label','sr-only',`Identificador de ${d.hostname || d.mac}`); const input=node('input','device-name-input'); input.value=d.name; input.placeholder='Adicionar identificador'; input.maxLength=80; const save=node('button','secondary','Salvar'); save.type='submit';
