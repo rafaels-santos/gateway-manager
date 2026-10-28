@@ -52,16 +52,22 @@ class Gateway:
         self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies), NoRedirect())
         self.lock = threading.RLock()
 
-    def request(self, path, data=None):
+    def request(self, path, data=None, *, referer='/', xhr=False):
         payload = None if data is None else urllib.parse.urlencode(data).encode('utf-8')
-        req = urllib.request.Request(self.base + path, data=payload, headers={'User-Agent': 'GatewayManager/1.0', 'Referer': self.base + '/', 'Accept': 'text/html,*/*'})
+        headers = {'User-Agent': 'Mozilla/5.0', 'Referer': self.base + referer, 'Accept': 'text/html,*/*'}
+        if xhr:
+            headers['X-Requested-With'] = 'XMLHttpRequest'
+        if data is not None:
+            headers['Origin'] = self.base
+        req = urllib.request.Request(self.base + path, data=payload, headers=headers)
         try:
             with self.opener.open(req, timeout=12) as response:
                 return response.read(2_000_000).decode('utf-8', errors='replace')
         except urllib.error.HTTPError as e:
             if e.code in (301, 302, 303) and e.headers.get('Location', '').startswith('/'):
                 return self.request(e.headers['Location'])
-            raise GatewayError('Gateway recusou a requisição (HTTP %s).' % e.code)
+            stage = {'/': 'página inicial', '/asp/GetRandCount.asp': 'token de login', '/login.cgi': 'autenticação', '/index.asp': 'verificação da sessão', PATH: 'leitura das reservas', '/html/ssmp/common/GetRandToken.asp': 'token de configuração'}.get(urllib.parse.urlsplit(path).path, 'operação de reserva')
+            raise GatewayError('Gateway recusou a etapa %s (HTTP %s).' % (stage, e.code))
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise GatewayError('Não foi possível acessar o gateway: %s' % e)
 
@@ -70,7 +76,10 @@ class Gateway:
             page = self.request('/')
             if 'EG8145X6' not in page:
                 raise GatewayError('O gateway não foi identificado como Huawei EG8145X6.')
-            token = self.request('/asp/GetRandCount.asp', {}).strip()
+            # The gateway login page creates this language cookie before submitting.
+            cookie = http.cookiejar.Cookie(version=0, name='Cookie', value='body:Language:english:id=-1', port=None, port_specified=False, domain=urllib.parse.urlsplit(self.base).hostname, domain_specified=False, domain_initial_dot=False, path='/', path_specified=True, secure=False, expires=None, discard=True, comment=None, comment_url=None, rest={}, rfc2109=False)
+            self.cookies.set_cookie(cookie)
+            token = self.request('/asp/GetRandCount.asp', {}, xhr=True).strip()
             if not token or len(token) > 256:
                 raise GatewayError('O gateway não retornou um token de login válido.')
             self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
@@ -118,7 +127,7 @@ class Gateway:
                 raise GatewayError('Reserva não encontrada; atualize a lista.')
             if any(r['id'] != domain and (r['ip'] == ip or r['mac'] == mac) for r in rows):
                 raise GatewayError('Este IP ou MAC já está reservado.')
-            token = self.request('/html/ssmp/common/GetRandToken.asp', {}).strip()
+            token = self.request('/html/ssmp/common/GetRandToken.asp', {}, xhr=True).strip()
             if not re.fullmatch(r'[a-zA-Z0-9]{16,256}', token):
                 raise GatewayError('Token de operação indisponível; nenhuma alteração foi feita.')
             action = 'set.cgi' if domain else 'add.cgi'

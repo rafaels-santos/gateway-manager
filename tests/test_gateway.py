@@ -8,7 +8,7 @@ class FakeGateway(Gateway):
         super().__init__('192.168.100.254')
         self.page = PAGE
         self.writes = []
-    def request(self, path, data=None):
+    def request(self, path, data=None, **kwargs):
         if path.endswith('GetRandToken.asp'): return 'a' * 32
         if path.startswith('/set.cgi'):
             self.writes.append((path, data))
