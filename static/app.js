@@ -99,21 +99,44 @@ $('#connect').addEventListener('submit',async e=>{e.preventDefault();if(!$('#gat
 let detectTimer=null,detectSequence=0,manualGatewayModel=false;
 const modelsReady=loadGatewayModels();
 function validProbeAddress(value){try{const url=new URL(value.includes('://')?value:'http://'+value),host=url.hostname.replace(/^\[|\]$/g,'');return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)?host.split('.').every(part=>Number(part)<=255):host.includes(':')&&/^[a-f0-9:]+$/i.test(host);}catch{return false;}}
+function gatewayPanelUrl(address){
+  if(!validProbeAddress(address))return null;
+  try{const url=new URL(address.includes('://')?address:'http://'+address);if(!['http:','https:'].includes(url.protocol)||url.username||url.password||!['','/'].includes(url.pathname)||url.search||url.hash)return null;return url.href;}catch{return null;}
+}
+function setGatewayVendor(huawei){$('#gateway-vendor-icon').hidden=!huawei;$('#gateway-vendor-fallback').hidden=huawei;}
+function renderGatewayModel(label,huawei){
+  const status=$('#gateway-detection'),url=gatewayPanelUrl($('#address').value.trim());status.replaceChildren();status.title='';setGatewayVendor(huawei);
+  const name=node(url?'a':'strong','gateway-model-link',label);
+  if(url){name.href=url;name.target='_blank';name.rel='noopener noreferrer';name.title='Abrir painel do gateway em nova aba';name.append(node('span','external-mark',' ↗'));}
+  status.append(name);
+}
+function setGatewayIpEditor(open){const editor=$('#gateway-address-editor');editor.hidden=!open;$('#edit-gateway-ip').setAttribute('aria-expanded',String(open));$('#gateway-address-error').textContent='';if(open){$('#gateway-address-input').value=$('#address').value;$('#gateway-address-input').focus();$('#gateway-address-input').select();}}
+function applyGatewayIp(){
+  const input=$('#gateway-address-input'),address=input.value.trim();
+  if(!gatewayPanelUrl(address)){$('#gateway-address-error').textContent='Informe um IP válido, com http:// ou https:// se necessário.';input.focus();return;}
+  const changed=address!==$('#address').value.trim();$('#address').value=address;$('#gateway-ip-label').textContent=address;setGatewayIpEditor(false);
+  if(changed)$('#address').dispatchEvent(new Event('input'));
+  $('#edit-gateway-ip').focus();if(changed)detectGateway();
+}
+$('#edit-gateway-ip').addEventListener('click',()=>setGatewayIpEditor($('#gateway-address-editor').hidden));
+$('#apply-gateway-ip').addEventListener('click',applyGatewayIp);
+$('#cancel-gateway-ip').addEventListener('click',()=>{setGatewayIpEditor(false);$('#edit-gateway-ip').focus();});
+$('#gateway-address-input').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();applyGatewayIp();}if(event.key==='Escape'){event.preventDefault();setGatewayIpEditor(false);$('#edit-gateway-ip').focus();}});
 async function detectGateway(){
   clearTimeout(detectTimer);const address=$('#address').value.trim(),sequence=++detectSequence,status=$('#gateway-detection'),button=$('#detect-gateway');
   if(!validProbeAddress(address)){status.textContent='Confira o endereço IP.';button.disabled=false;return;}
-  button.disabled=true;status.title='';status.textContent='Identificando gateway…';
+  button.disabled=true;status.title='';status.textContent='Identificando gateway…';setGatewayVendor(false);
   try{await modelsReady;const result=await api('/api/detect',{address});if(sequence!==detectSequence||address!==$('#address').value.trim())return;
-    if(manualGatewayModel)return;status.replaceChildren();status.append(node('strong','',result.model||'Modelo não identificado'));if(result.firmware)status.append(node('span','muted',`Firmware ${result.firmware}`));if(!result.supported)status.append(node('span','muted','Selecione um modelo compatível manualmente.'));
+    if(manualGatewayModel)return;if(result.model)renderGatewayModel(result.model,Boolean(result.adapter_id?.startsWith('huawei-')));else status.textContent='Modelo não identificado';if(!result.supported)status.title='Selecione um modelo compatível manualmente.';
     if(!manualGatewayModel){$('#gateway-model').value=result.supported?result.adapter_id:'';}
   }catch(error){if(sequence===detectSequence){status.textContent='Detecção indisponível. Selecione o modelo manualmente.';status.title=error.message;}}
   finally{if(sequence===detectSequence)button.disabled=false;}
 }
-$('#address').addEventListener('input',()=>{clearTimeout(detectTimer);detectSequence++;manualGatewayModel=false;$('#gateway-model').value='';setManualGateway(false);$('#gateway-detection').title='';$('#detect-gateway').disabled=false;$('#gateway-detection').textContent='Aguardando um IP completo…';if(validProbeAddress($('#address').value.trim()))detectTimer=setTimeout(detectGateway,900);});
+$('#address').addEventListener('input',()=>{clearTimeout(detectTimer);detectSequence++;manualGatewayModel=false;$('#gateway-model').value='';setManualGateway(false);$('#gateway-detection').title='';$('#detect-gateway').disabled=false;$('#gateway-detection').textContent='Aguardando um IP completo…';setGatewayVendor(false);if(validProbeAddress($('#address').value.trim()))detectTimer=setTimeout(detectGateway,900);});
 $('#address').addEventListener('blur',()=>{if(!manualGatewayModel&&validProbeAddress($('#address').value.trim())){clearTimeout(detectTimer);detectTimer=setTimeout(detectGateway,100);}});
 function setManualGateway(open){$('#manual-model').hidden=!open;$('#manual-gateway').setAttribute('aria-expanded',String(open));$('#manual-gateway').textContent=open?'Fechar seleção':'Selecionar manualmente';}
 $('#manual-gateway').addEventListener('click',()=>{const open=$('#manual-model').hidden;setManualGateway(open);if(open)$('#gateway-model').focus();});
-$('#gateway-model').addEventListener('change',()=>{manualGatewayModel=Boolean($('#gateway-model').value);if(manualGatewayModel){detectSequence++;$('#detect-gateway').disabled=false;$('#gateway-detection').title='';$('#gateway-detection').replaceChildren(node('strong','',$('#gateway-model').selectedOptions[0].textContent),node('span','muted','Selecionado manualmente'));setManualGateway(false);}});
+$('#gateway-model').addEventListener('change',()=>{manualGatewayModel=Boolean($('#gateway-model').value);if(manualGatewayModel){detectSequence++;$('#detect-gateway').disabled=false;$('#gateway-detection').title='';const label=$('#gateway-model').selectedOptions[0].textContent;renderGatewayModel(label.replace(/^Huawei /,''),/^Huawei /i.test(label));setManualGateway(false);$('#manual-gateway').focus();}});
 $('#detect-gateway').addEventListener('click',()=>{manualGatewayModel=false;setManualGateway(false);detectGateway();});
 api('/api/session').then(session=>showDashboard(session)).catch(()=>{if(!$('#login-screen').hidden)detectGateway();});
 $('#reservation').addEventListener('submit',async e=>{e.preventDefault();message('Salvando reserva...');try{const mac=$('#mac').value.trim().toLowerCase(),id=$('#reservation-id').value,ip=$('#ip').value.trim();const old=reservations.find(row=>row.id===id);if(!old||old.mac!==mac||old.ip!==ip)await api('/api/reservation',{id,mac,ip});try{await api('/api/name',{mac,name:$('#name').value})}catch(err){message('Reserva salva, mas o identificador não foi salvo: '+err.message,true);await refreshReservations();return}resetForm();await refreshReservations();message('Dados salvos.')}catch(err){message(err.message,true)}});
