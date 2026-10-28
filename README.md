@@ -10,7 +10,13 @@ As abas DHCP e DNS permitem consultar e alterar o intervalo principal, concessã
 
 ## Executar no ZimaOS
 
-Use o Compose abaixo após o workflow de publicação no GitHub terminar com sucesso. Para atualizar uma instalação existente, baixe novamente a imagem e recrie o contêiner: `docker compose pull` e `docker compose up -d`.
+Para a instalação existente em `192.168.100.236:8081`, use [docker-compose.zimaos.yml](docker-compose.zimaos.yml). Ele preserva o volume verificado `custom__kyq3dva5_gateway-manager-data`, limita os logs e verifica a saúde do aplicativo. O `pull_policy: always` consulta o registro quando o Compose é executado. Ele não consulta nem instala imagens automaticamente em segundo plano; um simples reinício Docker também não força o download.
+
+Atualize a instalação existente usando o Compose completo em vez de criar uma segunda cópia com a mesma porta e nome. O volume é externo e precisa existir. Em outro ZimaOS, identifique o volume atual com `docker inspect gateway-manager --format '{{range .Mounts}}{{.Name}} {{.Destination}}{{end}}'` e substitua o nome correspondente a `/data` no arquivo; para uma instalação nova, crie antes o volume ou adapte a seção de volumes. Não remova o volume existente durante a migração. Algumas telas do ZimaOS podem regravar campos do Compose: confira se o volume e a política de download foram mantidos depois de salvar pela interface.
+
+O arquivo não fornece o socket do Docker ao aplicativo. Verificações periódicas e recriação automática exigem um mecanismo separado no host, com acesso apropriado ao Docker. Quando o aplicativo é recriado, as credenciais e sessões mantidas em memória são perdidas: conecte-se novamente para retomar os alertas.
+
+Para uma instalação genérica sem atualizador automático, está disponível o Compose abaixo. Para atualizar manualmente, execute `docker compose pull` e `docker compose up -d`.
 
 ```yaml
 services:

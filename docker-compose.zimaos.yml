@@ -1,0 +1,37 @@
+# Instalação existente: ZimaOS 192.168.100.236, porta 8081.
+# O volume externo abaixo já é usado pelo Gateway Manager neste ZimaOS.
+services:
+  gateway-manager:
+    image: ghcr.io/rafaels-santos/gateway-manager:latest
+    container_name: gateway-manager
+    pull_policy: always
+    restart: unless-stopped
+    init: true
+    environment:
+      DATA_DIR: /data
+      PORT: "8080"
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8081:8080"
+    volumes:
+      - gateway-manager-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5).close()"]
+      interval: 1m
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 30s
+
+volumes:
+  gateway-manager-data:
+    external: true
+    name: custom__kyq3dva5_gateway-manager-data
+
+x-casaos:
+  icon: https://raw.githubusercontent.com/rafaels-santos/gateway-manager/master/static/icon.png
