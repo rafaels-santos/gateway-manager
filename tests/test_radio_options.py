@@ -49,7 +49,7 @@ class RadioOptionsTests(unittest.TestCase):
 
     def test_channel_fields_cannot_be_smuggled_into_power_write(self):
         gateway = Gateway('192.168.100.254')
-        with patch.object(gateway, 'request') as request:
-            with self.assertRaisesRegex(GatewayError, 'somente para prévia'):
+        with patch.object(gateway, 'radio_config',return_value=[]), patch.object(gateway, 'request') as request:
+            with self.assertRaisesRegex(GatewayError, 'Contrato de rádio'):
                 gateway.save_radio({'confirm': 'WIFI', 'power': '80', 'channel': '36'})
             request.assert_not_called()

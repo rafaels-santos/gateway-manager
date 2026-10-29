@@ -41,3 +41,13 @@ Inspeção autenticada em 28/10/2026, sem aplicação no equipamento:
 - O HTML anuncia `ssidMaxNum='4'` e contadores `SsidNum` por banda. Os contadores observados incluem redes que não aparecem na tabela básica; não calcular capacidade usando somente as linhas visíveis.
 - As rotinas de rádio estão em scripts externos `../common/wlan_list.asp`, `wlanadvance_com_api.asp` e `wlanadvance_api.asp`. O formulário contém apenas rotinas locais de acompanhamento de processamento. As ações auxiliares precisam ser conferidas antes de habilitar gravação de canal/largura.
 - O aplicativo implementa por enquanto a matriz de opções e sua prévia, com perfil exato e rejeição de combinações inválidas. Alteração de potência continua sendo uma operação separada.
+
+## Contrato de rádio conferido pelo aplicativo — 29/10/2026
+
+A exportação autenticada retornou as funções nativas sem arrays de estado. `CheckConfigChannel` retorna false para seleção 0/-1 ou canal igual ao atual; para canal fixo diferente, retorna true. O código nativo envolve a alteração com `c1=InternetGatewayDevice.X_HW_DEBUG.WLANConfigAction`, ActionType=0, e c2 no mesmo objeto com ActionType=1 e SSIDList=índice somente quando a função retorna false. Essa condição foi reproduzida literalmente, sem inverter seu significado pelo nome da função.
+
+Os campos permitidos nesta operação são y.Channel, y.AutoChannelEnable, y.X_HW_HT20 e, em automático 5 GHz, y.X_HW_AutoChannelScope. País, padrão, potência, Band Steering, configuração de SSIDs e a outra banda são relidos para preservação. Automático com DFS usa Channel=0, AutoChannelEnable=1 e escopo `0`; sem DFS usa apenas os canais permitidos sem DFS da largura observada.
+
+A gravação exige leitura reconhecida do escopo, Band Steering, WdsFlag=0, fobidChannel=0, DoubleFreqFlag=1, dfsChSwitch=1 e a função CheckConfigChannel conferida, além do perfil exato. Falta de evidência mantém somente a prévia.
+
+Na sessão real, `/html/ssmp/userlog/logview.asp` devolveu HTTP 404. O leitor passa a tentar a pasta fixa alternativa `/html/ssmp/logview/logview.asp` somente nessa condição, nunca após 403/negação de sessão. Device Information serve como fonte alternativa de versão por nomes explícitos dos campos, sem retornar serial. Esses caminhos devem ser reconferidos após troca de firmware/perfil.

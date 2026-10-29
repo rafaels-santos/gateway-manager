@@ -500,11 +500,29 @@ def session_identity(gateway):
     # This firmware exposes its software version in the User Log header after authentication.
     identity={'firmware':None,'hardware':None}
     try:
-        header='\n'.join(gateway.logs()['raw'].splitlines()[:8])
+        header='\n'.join(gateway.logs()['raw'].lstrip('\ufeff').splitlines()[:8])
+        header=re.split(r'(?m)^\s*\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}',header,maxsplit=1)[0]
         for key,label in [('firmware','SWVer'),('hardware','HWVer')]:
-            match=re.search(r'^'+label+r':([^;\r\n]{1,100})',header,re.M)
+            match=re.search(r'(?:^|[;\r\n])\s*'+label+r'\s*:\s*([^;\r\n]{1,100})',header,re.M)
             if match: identity[key]=match[1].strip()
     except GatewayError: pass
+    if any(value is None for value in identity.values()):
+        try:
+            page=gateway.request('/html/ssmp/deviceinfo/deviceinfo.asp',max_redirects=0)
+            detected=parse_gateway_identity(page)
+            for key in identity:
+                if identity[key] is None and detected.get(key): identity[key]=detected[key]
+            for constructor in ('stDevInfo','stDeviceInfo','DeviceInfo'):
+                signature=re.search(r'function\s+'+constructor+r'\s*\(([^)]*)\)',page)
+                if not signature: continue
+                names=[name.strip().casefold() for name in signature[1].split(',')]
+                for values in parse_constructors(page,constructor):
+                    if len(values)!=len(names) or not values or values[0]!='InternetGatewayDevice.DeviceInfo': continue
+                    fields=dict(zip(names,values))
+                    for key,aliases in (('firmware',('swver','softwareversion','swversion')),('hardware',('hwver','hardwareversion','hwversion'))):
+                        value=next((str(fields[name]) for name in aliases if name in fields),None)
+                        if identity[key] is None and value and re.fullmatch(r'[A-Za-z0-9._-]{1,100}',value): identity[key]=value
+        except GatewayError: pass
     gateway.identity=identity
     return identity
 
@@ -873,7 +891,7 @@ class Handler(BaseHTTPRequestHandler):
                 except GatewayError as error:
                     record_capability(gw, feature, 'write', capability_failure(error), str(error)); raise
                 record_capability(gw, feature, 'write', 'verified')
-                with labels() as db: network_management.event(db, gw.base, 'configuration_changed', 'Alteração de autenticação Wi-Fi ou potência confirmada por releitura.', evidence='confirmed')
+                with labels() as db: network_management.event(db, gw.base, 'configuration_changed', 'Alteração de autenticação Wi-Fi ou rádio confirmada por releitura.', evidence='confirmed')
                 self.send_json(200, {'config': result})
             elif self.path == '/api/wifi/password':
                 gw = self.session()

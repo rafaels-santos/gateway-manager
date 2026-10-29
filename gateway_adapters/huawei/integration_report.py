@@ -7,6 +7,7 @@ from ..errors import GatewayError
 SOURCES = {
     '/html/amp/wlanadv/wlanadvance_api.asp': ('AddSubmitParamChannel', 'AddSubmitParam', 'CheckConfigChannel'),
     '/html/amp/wlanadv/wlanadvance_com_api.asp': ('CheckConfigChannel', 'X_HW_HT20Change', 'ChannelChange'),
+    '/html/amp/common/wlan_list.asp': ('stWlanWifi', 'StXHWGlobalConfig'),
 }
 
 
@@ -51,8 +52,10 @@ def integration_report(gateway):
         try:
             source = gateway.request(path, max_redirects=0)
             functions = selected_functions(source, names)
+            from .radio_control import FLAGS, literal_flag
             sources.append({'path': path, 'status': 'available' if functions else 'unrecognized',
-                            'sha256': hashlib.sha256('\n'.join(functions.values()).encode()).hexdigest(), 'functions': functions})
+                            'sha256': hashlib.sha256('\n'.join(functions.values()).encode()).hexdigest(), 'functions': functions,
+                            'flags': {name: literal_flag(source,name) for name in FLAGS}})
         except GatewayError:
             sources.append({'path': path, 'status': 'unavailable', 'functions': {}})
     identity = getattr(gateway, 'identity', {}) or {}

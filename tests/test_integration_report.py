@@ -31,7 +31,7 @@ function Other(){return pageToken;}
 
     def test_read_failure_is_reported_without_error_body_and_no_write(self):
         gateway = Mock(model_id='huawei-eg8145x6-10', identity={})
-        gateway.request.side_effect = [GatewayError('sensitive response body'), 'function CheckConfigChannel(){return true;}']
+        gateway.request.side_effect = [GatewayError('sensitive response body'), 'function CheckConfigChannel(){return true;}', '']
         result = integration_report(gateway)
         self.assertTrue(result['read_only'])
         self.assertEqual(result['sources'][0]['status'], 'unavailable')

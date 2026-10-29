@@ -34,7 +34,8 @@ def preview_radio(target, body):
     return {'id': target['id'], 'band': target['band'], 'width_code': width, 'channel': channel,
             'width_label': option['label'],
             'channel_label': next(row['label'] for row in option['channels'] if row['value'] == channel),
-            'apply_available': False,
+            'apply_available': bool(target.get('channel_write_available')),
             'warnings': ['A alteração afeta todos os clientes e enlaces de cobertura desta banda.',
                          'Canais DFS podem exigir espera e mudar quando houver detecção de radar.',
+                         'A mudança só é aplicada após confirmação explícita; não há rollback automático.' if target.get('channel_write_available') else
                          'Prévia sem gravação: as ações auxiliares do firmware ainda precisam ser conferidas.']}

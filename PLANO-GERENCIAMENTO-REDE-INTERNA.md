@@ -213,3 +213,13 @@ Iniciada pela prévia de canal/largura descrita abaixo. As gravações e o ciclo
 - Inventário ganhou exportação autenticada de diagnóstico da integração: somente funções nativas selecionadas de rádio, sem arrays de estado, credenciais ou token da sessão. Funções ambíguas são omitidas.
 - **116 testes Python e 5 testes de navegação passaram**; inclui criação desativada, falha parcial, recuperação persistente, bloqueio de ativação/renomeação pendente, exclusão em duas etapas, dependências e ausência de segredos nas respostas e no diário.
 - Restam os comandos auxiliares de canal/largura e os aceites reais de conectividade/isolamento. Nenhum desses aceites é substituído pelos testes simulados. Nenhuma configuração do Huawei foi aplicada durante o desenvolvimento.
+
+### Continuação de rádio e conferência no ZimaOS — 29/10/2026
+
+- O commit `615c8ac` foi instalado pelo Compose existente no ZimaOS. A revisão do contêiner foi conferida, com estado healthy e zero reinícios. O pull do Compose pulou a imagem; o download direto do GHCR corrigiu a imagem local antes da recriação.
+- A sessão real do app confirmou as leituras das duas bandas e as capacidades nativas de SSID: quatro posições por banda, com contadores que incluem redes reservadas. Nenhuma configuração foi aplicada no Huawei.
+- O diagnóstico autenticado permitiu conferir AddSubmitParamChannel, AddSubmitParam e CheckConfigChannel. Foram implementados canal fixo, largura e automático com/sem DFS, com as ações auxiliares nativas e releitura de país, padrão, potência, Band Steering, outras bandas e SSIDs.
+- A aplicação exige perfil exato, esquema de leitura do escopo automático, flags reconhecidas e contrato nativo compatível. WDS ou dependências desconhecidas mantêm o controle em prévia; nenhuma opção regulatória é inferida para outro perfil.
+- A identificação não deve depender exclusivamente de User Logs. O caminho antigo retornou HTTP 404 na sessão real; foi acrescentado fallback de pasta somente nesse caso e leitura de versão por campos explícitos da página Device Information. Cabeçalhos com campos separados por ponto e vírgula são suportados; eventos do log não são fonte de versão.
+- **127 testes Python e 5 de navegação passaram**, incluindo ordem c1/y/c2, diferenças entre canal fixo e automático, DFS, escopo do canal 165, resposta interrompida, preservação de outra banda e rejeição de contrato desconhecido.
+- Aceites que dependem de mudar a rede continuam separados: isolamento IPv4/IPv6 entre clientes, reconexão de cliente bloqueado, resolução DNS por cliente real e mudança de LAN. Eles exigem cliente/janela autorizados e não foram executados durante o desenvolvimento.

@@ -65,7 +65,8 @@ class HuaweiRadioSecurity:
                            'channel_options': choices, 'channel_preview_available': bool(choices),
                            'channel_write_available': False})
         if not result: raise GatewayError('Dados de rádio indisponíveis ou formato não reconhecido.')
-        return result
+        from .radio_control import enrich_radios
+        return enrich_radios(self, page, result)
 
     def preview_radio_change(self, body):
         with self.lock:
@@ -76,7 +77,8 @@ class HuaweiRadioSecurity:
     def save_radio(self, body):
         if body.get('confirm') != 'WIFI': raise GatewayError('Confirme a alteração de rádio.')
         if 'channel' in body or 'width_code' in body:
-            raise GatewayError('Canal e largura estão disponíveis somente para prévia; o contrato de gravação ainda está em validação.')
+            from .radio_control import apply_radio_change
+            return apply_radio_change(self, body)
         with self.lock:
             target = next((row for row in self.radio_config() if row['id'] == body.get('id')), None)
             if not target or not target['writable']: raise GatewayError('Edição de potência indisponível neste perfil de firmware.')

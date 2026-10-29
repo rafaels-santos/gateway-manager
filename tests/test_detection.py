@@ -36,8 +36,24 @@ class DetectionTests(unittest.TestCase):
         gateway=app.Gateway('192.168.100.254')
         with patch.object(gateway,'logs',return_value={'raw':'Manufacturer:Huawei;\nProductClass:EG8145X6-10;\nSWVer:V5R024C10S106;\nHWVer:343D.D;'}):
             self.assertEqual(app.session_identity(gateway),{'firmware':'V5R024C10S106','hardware':'343D.D'})
-        with patch.object(gateway,'logs',side_effect=app.GatewayError('Sem permissão')):
+        with patch.object(gateway,'logs',side_effect=app.GatewayError('Sem permissão')),patch.object(gateway,'request',side_effect=app.GatewayError('Sem leitura')):
             self.assertIsNone(app.session_identity(gateway)['firmware'])
+
+    def test_authenticated_semicolon_header_and_event_text_are_distinct(self):
+        gateway=app.Gateway('192.168.100.254')
+        with patch.object(gateway,'logs',return_value={'raw':'\ufeffManufacturer:Huawei;ProductClass:EG8145X6-10; HWVer:343D.D; SWVer:V5R024C10S106;\n2026-10-29 10:00:00 [Info][Config-Log] name;SWVer:FAKE;'}):
+            self.assertEqual(app.session_identity(gateway),{'firmware':'V5R024C10S106','hardware':'343D.D'})
+        with patch.object(gateway,'logs',return_value={'raw':'2026-10-29 10:00:00 [Info][Config-Log] name;SWVer:FAKE;HWVer:FAKE;'}),patch.object(gateway,'request',side_effect=app.GatewayError('Sem leitura')):
+            self.assertEqual(app.session_identity(gateway),{'firmware':None,'hardware':None})
+
+    def test_device_information_fallback_uses_explicit_fields_without_returning_serial(self):
+        gateway=app.Gateway('192.168.100.254')
+        page='function stDevInfo(domain,HWVer,SWVer,SerialNumber){} new stDevInfo("InternetGatewayDevice.DeviceInfo","343D.D","V5R024C10S106","SECRET_SERIAL");'
+        with patch.object(gateway,'logs',side_effect=app.GatewayError('HTTP 404')),patch.object(gateway,'request',return_value=page) as request:
+            result=app.session_identity(gateway)
+            self.assertEqual(result,{'hardware':'343D.D','firmware':'V5R024C10S106'})
+            self.assertNotIn('SECRET_SERIAL',str(result))
+            request.assert_called_once_with('/html/ssmp/deviceinfo/deviceinfo.asp',max_redirects=0)
 
 
 if __name__=='__main__':unittest.main()
