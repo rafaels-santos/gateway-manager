@@ -52,10 +52,11 @@ def integration_report(gateway):
         try:
             source = gateway.request(path, max_redirects=0)
             functions = selected_functions(source, names)
-            from .radio_control import FLAGS, literal_flag
+            from .radio_control import FLAGS, literal_flag, steering_records
             sources.append({'path': path, 'status': 'available' if functions else 'unrecognized',
                             'sha256': hashlib.sha256('\n'.join(functions.values()).encode()).hexdigest(), 'functions': functions,
                             'flags': {name: literal_flag(source,name) for name in FLAGS},
+                            'band_steering_records': steering_records(source),
                             'flags_note': 'Inicializadores do código, não valores calculados pelo JavaScript em execução.'})
         except GatewayError:
             sources.append({'path': path, 'status': 'unavailable', 'functions': {}})

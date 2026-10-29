@@ -36,6 +36,19 @@ def canonical_scope(value):
     return ','.join(str(n) for n in sorted(set(map(int, value.split(',')))))
 
 
+def steering_records(source):
+    result = []
+    for row in parse_constructors(source, 'StXHWGlobalConfig'):
+        if len(row) != 2: continue
+        domain, value = str(row[0]), str(row[1])
+        # Read-only identity, never used as a CGI target. Firmware families put
+        # this typed Wi-Fi object under either local namespace.
+        if not re.fullmatch(r'InternetGatewayDevice\.(?:LANDevice\.1|X_HW_WIFIInfo)\.[A-Za-z0-9_.]+', domain): continue
+        if not re.fullmatch(r'\d{1,10}', value) or int(value) > 4294967295: continue
+        result.append({'domain': domain, 'value': str(int(value))})
+    return result
+
+
 def automatic_scope(options, width):
     option = next(row for row in options if row['value'] == width)
     return ','.join(row['value'] for row in option['channels']
@@ -60,8 +73,7 @@ def enrich_radios(gateway, page, radios):
     index = scope_index(all_source)
     scopes = {str(row[0]): str(row[index]) for row in parse_constructors(all_source, 'stWlanWifi')
               if index is not None and len(row) > index}
-    steering = [row[1] for row in parse_constructors(all_source, 'StXHWGlobalConfig') if len(row) == 2
-                and row[0] == 'InternetGatewayDevice.LANDevice.1.WiFi.X_HW_GlobalConfig' and row[1] in ('0', '1')]
+    steering = [row['value'] for row in steering_records(all_source)]
     steering = steering[0] if steering and len(set(steering)) == 1 else None
     for radio in radios:
         scope = canonical_scope(scopes.get(radio['id']))

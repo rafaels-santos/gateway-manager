@@ -52,4 +52,6 @@ A gravação exige leitura reconhecida do escopo, Band Steering, WdsFlag=0, fobi
 
 A conferência ao vivo também mostrou que a definição dos construtores e suas instâncias podem estar em arquivos diferentes. A leitura combina os três scripts conhecidos, mantendo a validação dos domínios e recusando dados conflitantes. O diagnóstico identifica os flags como inicializadores, sem apresentá-los como valores calculados pelo JavaScript em execução.
 
+BandSteeringPolicy é preservado como valor numérico opaco, sem inferir que todos os perfis usam apenas 0/1. O leitor aceita o construtor explícito StXHWGlobalConfig nos namespaces locais LANDevice.1 e X_HW_WIFIInfo, normaliza valores numéricos ou strings e recusa conflitos. O domínio lido nunca é usado como alvo de CGI; nenhuma escrita da política foi adicionada.
+
 Na sessão real, `/html/ssmp/userlog/logview.asp` devolveu HTTP 404. O leitor passa a tentar a pasta fixa alternativa `/html/ssmp/logview/logview.asp` somente nessa condição, nunca após 403/negação de sessão. Device Information serve como fonte alternativa de versão por nomes explícitos dos campos, sem retornar serial. Esses caminhos devem ser reconferidos após troca de firmware/perfil.
