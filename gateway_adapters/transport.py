@@ -71,7 +71,7 @@ class GatewayTransport:
             if e.code in (301, 302, 303) and e.headers.get('Location', '').startswith('/') and not e.headers.get('Location', '').startswith('//'):
                 if max_redirects<=0: raise GatewayError('O gateway excedeu o limite de redirecionamentos.')
                 return self.request(e.headers['Location'],timeout=timeout,max_redirects=max_redirects-1)
-            stage = {'/': 'página inicial', '/asp/GetRandCount.asp': 'token de login', '/login.cgi': 'autenticação', '/index.asp': 'verificação da sessão', '/html/bbsp/dhcpstatic/dhcpstatic.asp': 'leitura das reservas', '/html/ssmp/common/GetRandToken.asp': 'token de configuração'}.get(urllib.parse.urlsplit(path).path, 'operação de reserva')
+            stage = {'/': 'página inicial', '/asp/GetRandCount.asp': 'token de login', '/login.cgi': 'autenticação', '/index.asp': 'verificação da sessão', '/html/bbsp/dhcpstatic/dhcpstatic.asp': 'leitura das reservas', '/html/ssmp/common/GetRandToken.asp': 'token de configuração'}.get(urllib.parse.urlsplit(path).path, 'consulta de configuração' if data is None else 'alteração de configuração')
             raise GatewayError('Gateway recusou a etapa %s (HTTP %s).' % (stage, e.code))
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             raise GatewayError('Não foi possível acessar o gateway: %s' % e)

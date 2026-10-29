@@ -61,5 +61,8 @@ def integration_report(gateway):
         except GatewayError:
             sources.append({'path': path, 'status': 'unavailable', 'functions': {}})
     identity = getattr(gateway, 'identity', {}) or {}
+    from .log_discovery import discover_log_paths
+    try: logs=getattr(gateway,'discovered_log_paths',None) or discover_log_paths(gateway)
+    except GatewayError: logs={}
     return {'schema': 1, 'model': gateway.model_id, 'hardware': identity.get('hardware'),
-            'firmware': identity.get('firmware'), 'read_only': True, 'sources': sources}
+            'firmware': identity.get('firmware'), 'read_only': True, 'sources': sources,'log_sources':logs}

@@ -17,6 +17,7 @@ class HuaweiDiagnostics:
     def logs(self, source='user'):
         paths={'user':'/html/ssmp/userlog/logview.asp','ap':'/html/ssmp/aplog/aplogview.asp'}
         if source not in paths: raise GatewayError('Origem de logs não suportada.')
+        paths.update(getattr(self,'discovered_log_paths',{}))
         # Read the same page as Maintenance > User Log; never change logging settings.
         try:
             page = self.request(paths[source])
@@ -24,5 +25,10 @@ class HuaweiDiagnostics:
             # Firmware families expose User Log under different fixed folders.
             # Never use a fallback to circumvent a permission/session denial.
             if source != 'user' or '(HTTP 404)' not in str(error): raise
-            page = self.request('/html/ssmp/logview/logview.asp')
+            from .log_discovery import discover_log_paths
+            discovered=discover_log_paths(self)
+            self.discovered_log_paths=discovered
+            alternate=discovered.get('user','/html/ssmp/logview/logview.asp')
+            if alternate==paths[source]: raise
+            page = self.request(alternate)
         return parse_logs_page(page, source)
