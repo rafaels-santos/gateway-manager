@@ -14,7 +14,7 @@ function deviceIcon(kind) {
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg'); svg.setAttribute('viewBox','0 0 24 24'); svg.setAttribute('aria-hidden','true');
   const path=document.createElementNS('http://www.w3.org/2000/svg','path'); path.setAttribute('d',kind==='wifi' ? 'M3 8.5a14 14 0 0 1 18 0M6 12a9.5 9.5 0 0 1 12 0M9 15.5a5 5 0 0 1 6 0M12 19h.01' : 'M4 4h16v10H4zM9 18h6M12 14v4'); svg.append(path); return svg;
 }
-const pageLabels={devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP IPv4',dns:'DNS da LAN',wifi:'Redes e SSIDs',maintenance:'Importar / exportar',reboot:'Reinício',logs:'Logs',notifications:'Notificações'};
+const pageLabels={devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP IPv4',dns:'DNS da LAN','static-dns':'Nomes DNS locais',ipv6:'IPv6 e DHCPv6','port-isolation':'Isolamento de portas',wifi:'Redes e SSIDs',firmware:'Firmware',maintenance:'Importar / exportar',reboot:'Reinício',logs:'Logs',capabilities:'Capacidades do gateway',notifications:'Notificações'};
 function updateNavigation(page){
   document.querySelectorAll('.nav-item').forEach(el=>{const active=el.dataset.page===page&&(page!=='devices'||(el.dataset.networkView||'online')===(deviceView==='blocked'?'blocked':'online'));el.classList.toggle('active',active);if(active)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   $('#breadcrumb').textContent=page==='devices'&&deviceView==='blocked'?'Bloqueios Wi-Fi':pageLabels[page];
@@ -23,11 +23,85 @@ function setPage(page,view='online') {
   if(!Object.hasOwn(pageLabels,page))return;
   document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
   if(page==='devices')selectDeviceView(view);else updateNavigation(page);
-  if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='wifi') loadWifi(); else if(page==='logs') loadLogs(); else if(page==='maintenance') loadMaintenance();
+  if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='static-dns') loadStaticDns(); else if(page==='ipv6') loadIpv6(); else if(page==='port-isolation') loadPortIsolation(); else if(page==='wifi') loadWifi(); else if(page==='logs') loadLogs(); else if(page==='maintenance') loadMaintenance(); else if(page==='firmware') loadFirmware(); else if(page==='capabilities') loadCapabilities(); else if(window.networkPageLoaders?.[page]) window.networkPageLoaders[page]();
 }
 document.addEventListener('click',event=>{document.querySelectorAll('.filter-menu[open]').forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});});
 document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.filter-menu[open]').forEach(menu=>{menu.open=false;menu.querySelector('summary').focus();});});
 document.querySelectorAll('.nav-item').forEach(el=>el.addEventListener('click',()=>setPage(el.dataset.page,el.dataset.networkView||'online')));
+function capabilityState(cell){
+  const labels={available:'Disponível nesta sessão',verified:'Confirmado após releitura',denied:'Acesso recusado',unavailable:'Leitura indisponível',unrecognized:'Página acessível · formato não reconhecido',not_checked:'Ainda não consultado',not_applicable:'Não se aplica'};
+  if(cell.implementation==='not_implemented'){
+    if(cell.session==='available')return {text:'Página acessível · parser pendente',className:'warn'};
+    if(cell.session==='denied')return {text:'Acesso recusado nesta sessão',className:'error'};
+    if(cell.session==='unavailable')return {text:'Página indisponível nesta sessão',className:'warn'};
+    return {text:'Não inspecionado',className:'pending'};
+  }
+  if(cell.implementation==='not_offered')return {text:'Não oferecido pelo app',className:'na'};
+  const status=cell.session||'not_checked';
+  return {text:labels[status]||status,className:status==='available'||status==='verified'?'ok':status==='denied'?'error':status==='unavailable'||status==='unrecognized'?'warn':'pending'};
+}
+async function loadCapabilities(inspect=false){
+  const list=$('#capability-list'), status=$('#capability-profile');
+  const inspectButton=$('#inspect-capabilities');if(inspect){inspectButton.disabled=true;inspectButton.textContent='Lendo páginas…';}
+  list.replaceChildren();status.textContent=inspect?'Inspecionando somente as páginas LAN documentadas…':'Consultando capacidades registradas nesta sessão…';
+  try{
+    const data=inspect?await api('/api/capabilities/inspect',{}):await api('/api/capabilities');
+    status.textContent=`${data.model_label} · ${data.hardware||'HW não divulgado'} · ${data.firmware||'SW não divulgado'} · ${data.access_profile}`;
+    for(const [featureId,feature] of Object.entries(data.features)){
+      const card=node('article','panel capability-card'), heading=node('h2','',feature.label), states=node('div','capability-states');
+      for(const [key,label] of [['read','Leitura'],['write','Alteração']]){
+        const state=capabilityState(feature[key]), row=node('div','capability-state-row');
+        row.append(node('span','',label),node('span',`capability-state ${state.className}`,state.text));
+        const reason=node('p','muted',feature[key].reason);row.append(reason);states.append(row);
+      }
+      const observation=(data.pages||[]).find(page=>page.id===featureId);
+      card.append(heading,states);
+      if(observation?.status==='available'&&(observation.title||observation.controls?.length||observation.observations?.length||observation.clients?.length||observation.reservations?.length)){
+        const details=node('details','capability-inspected'), summary=node('summary','','Detalhes da leitura');details.append(summary);
+        if(observation.title)details.append(node('p','muted',`Página: ${observation.title}`));
+        if(observation.observations?.length){
+          const values=node('ul','capability-observations');
+          for(const item of observation.observations)values.append(node('li','',`${item.label}: ${item.value}${item.field?` · ${item.field}`:''}`));
+          details.append(values);
+        }else if(observation.parser_status==='unrecognized')details.append(node('p','muted','A página abriu, mas o formato dos campos não foi reconhecido. Nenhum valor foi presumido.'));
+        if(observation.clients?.length){
+          const clients=node('ul','capability-observations');
+          for(const client of observation.clients)clients.append(node('li','',`${client.mac.toUpperCase()}: ${client.ipv6.join(', ')}`));
+          details.append(node('p','muted',`${observation.clients.length} MAC(s) com endereço IPv6 identificado:`),clients);
+        }
+        if(observation.reservations?.length){
+          const ipv6Rows=node('ul','capability-observations');
+          for(const reservation of observation.reservations)ipv6Rows.append(node('li','',`${reservation.mac.toUpperCase()}: ${reservation.identifier}`));
+          details.append(node('p','muted',`${observation.reservations.length} reserva(s) IPv6 identificada(s):`),ipv6Rows);
+        }
+        if(observation.controls?.length)details.append(node('p','muted',observation.controls.join(' · ')));
+        card.append(details);
+      }
+      card.append(node('p','capability-evidence',feature.evidence||'Página ainda sem caminho documentado.'));list.append(card);
+    }
+  }catch(error){status.textContent=error.message;message(error.message,true);}
+  finally{if(inspect){inspectButton.disabled=false;inspectButton.textContent='Inspecionar páginas (somente leitura)';}}
+}
+$('#refresh-capabilities').addEventListener('click',loadCapabilities);
+$('#inspect-capabilities').addEventListener('click',()=>loadCapabilities(true));
+let firmwareRequest=0;
+async function loadFirmware(checkOnline=false){
+  const request=++firmwareRequest, checkButton=$('#check-firmware'), status=$('#firmware-check-status');
+  if(checkOnline){checkButton.disabled=true;checkButton.textContent='Consultando…';status.textContent='Consultando a página oficial da Huawei.';}
+  try{
+    const data=checkOnline?await api('/api/firmware/check',{}):await api('/api/firmware');
+    if(request!==firmwareRequest)return;
+    $('#firmware-current').textContent=data.current||'Não divulgado pelo gateway';
+    $('#firmware-model').textContent=data.model_label||data.model||'—';
+    $('#firmware-hardware').textContent=data.hardware||'Não divulgado';
+    $('#firmware-latest').textContent=data.available?.length?`${data.available.length} versão(ões) compatível(is)`:'Nenhuma versão confirmada';
+    $('#firmware-message').textContent=data.message||'Nenhuma versão para download foi confirmada por uma fonte oficial.';
+    const link=$('#firmware-source');link.href=data.source_url;$('#firmware-downloads').href=data.support_url;
+    status.textContent=data.checked_at?`Consulta online em ${new Date(data.checked_at).toLocaleString()}. ${data.source_reachable?'Fonte oficial acessível.':'Fonte oficial indisponível.'}`:'';
+  }catch(error){if(request===firmwareRequest){$('#firmware-message').textContent=error.message;status.textContent='';message(error.message,true);}}
+  finally{if(request===firmwareRequest){checkButton.disabled=false;checkButton.textContent='↻ Consultar fontes oficiais';}}
+}
+$('#check-firmware').addEventListener('click',()=>loadFirmware(true));
 function selectDeviceView(view){ deviceView=view; if(!$('#page-devices').hidden)updateNavigation('devices'); for(const state of ['online','offline','blocked']){ const active=state===view; $(`#show-${state}`).classList.toggle('active',active); $(`#show-${state}`).setAttribute('aria-pressed',String(active)); } document.querySelectorAll('[data-device-view]').forEach(panel=>panel.hidden=panel.dataset.deviceView!==view); }
 $('#show-online').addEventListener('click',()=>selectDeviceView('online'));
 $('#show-offline').addEventListener('click',()=>selectDeviceView('offline'));
@@ -38,6 +112,8 @@ async function refreshDevices() {
   try {
     const data=await api('/api/devices');
     if(document.querySelector('.filter-menu[open]')) return;
+    const canonicalByMac=new Map((data.clients||[]).map(client=>[client.mac,client]));
+    for(const device of [...data.devices,...(data.blocked||[])]){const canonical=canonicalByMac.get(device.mac);device.ipv6=canonical?.addresses?.ipv6||[];device.lan_port_status=canonical?.connection?.lan_port_status||'';device.lan_port_client_count=canonical?.connection?.lan_port_client_count;device.lan_port_observed_at=canonical?.connection?.lan_port_observed_at;}
     const online=data.devices.filter(d=>d.status==='online');
     const lan=online.filter(d=>d.type==='lan'), wifi=online.filter(d=>d.type==='wifi'), offline=data.devices.filter(d=>d.status==='offline');
     $('#total-count').textContent=online.length; $('#wifi-count').textContent=wifi.length; $('#lan-count').textContent=lan.length;
@@ -80,7 +156,8 @@ async function openDevice(device){
   $('#detail-subtitle').textContent=`${device.network || device.port || 'Rede não identificada'} · ${device.block_rule ? 'Bloqueado' : device.status === 'online' ? 'Online' : 'Offline'}`;
   $('#detail-subtitle').classList.toggle('blocked-pill',Boolean(device.block_rule));
   const info=$('#detail-info'); info.replaceChildren();
-  for(const [label,value] of [['Nome no gateway',device.gateway_name || device.hostname],['IP atual',device.ip ? `${device.ip}${device.ip_fixed ? ' · Fixo' : device.ip_static ? ' · Estático' : ''}` : ''],['Endereço MAC',device.mac.toUpperCase()],['Rede',device.network],['Porta',device.port],['Tempo conectado',formatDuration(device.duration)],['Tipo de IP',device.ip_type],['IPv6',device.ipv6_enabled === '1' ? 'Ativo' : device.ipv6_enabled === '0' ? 'Não informado pelo cliente' : 'Não informado']]) { const item=detailItem(label,value); if(label==='IP atual' && (device.ip_fixed || device.ip_static)) item.querySelector('strong').classList.add('ip-fixed'); info.append(item); }
+  for(const [label,value] of [['Nome no gateway',device.gateway_name || device.hostname],['IP atual',device.ip ? `${device.ip}${device.ip_fixed ? ' · Fixo' : device.ip_static ? ' · Estático' : ''}` : ''],['Endereço MAC',device.mac.toUpperCase()],['Rede',device.network],['Porta',device.port],['Estado da porta LAN',device.lan_port_status],['Tempo conectado',formatDuration(device.duration)],['Tipo de IP',device.ip_type],['Endereço(s) IPv6',device.ipv6?.join(', ')],['Indicador IPv6',device.ipv6_enabled === '1' ? 'O gateway informa IPv6 ativo; endereço não exibido' : device.ipv6_enabled === '0' ? 'Não informado pelo cliente' : 'Não informado']]) { const item=detailItem(label,value); if(label==='IP atual' && (device.ip_fixed || device.ip_static)) item.querySelector('strong').classList.add('ip-fixed'); info.append(item); }
+  if(device.lan_port_observed_at) info.append(detailItem('Leitura do enlace',new Date(device.lan_port_observed_at).toLocaleString('pt-BR')));
   $('#detail-name').value=device.name || ''; $('#detail-tag').value=device.tag || ''; $('#detail-ip').value=device.ip || ''; $('#detail-ip-submit').disabled=true; $('#detail-ip-status').textContent='Consultando reservas...';
   if(!$('#device-dialog').open) $('#device-dialog').showModal();
   try { const data=await api('/api/reservations'); if(currentDevice !== device) return; const existing=data.reservations.find(r=>r.mac.toLowerCase()===device.mac); device.reservationId=existing?.id || ''; if(existing) $('#detail-ip').value=existing.ip; $('#detail-ip-submit').textContent=existing?'Atualizar reserva':'Fixar IP'; $('#detail-ip-status').textContent=existing?'Este dispositivo já possui uma reserva de IP.':'A reserva pode entrar em vigor após a renovação DHCP.'; $('#detail-ip-submit').disabled=false; }
@@ -92,12 +169,16 @@ $('#detail-name-form').addEventListener('submit',async e=>{e.preventDefault(); c
 $('#detail-tag-form').addEventListener('submit',async e=>{e.preventDefault(); const d=currentDevice, button=e.submitter; button.disabled=true; try{await api('/api/tag',{mac:d.mac,tag:$('#detail-tag').value}); d.tag=$('#detail-tag').value; message('Categoria salva.'); await refreshDevices();}catch(err){message(err.message,true)}finally{button.disabled=false}});
 $('#detail-ip-form').addEventListener('submit',async e=>{e.preventDefault(); const d=currentDevice, button=e.submitter; button.disabled=true; try{await api('/api/reservation',{id:d.reservationId || '',mac:d.mac,ip:$('#detail-ip').value.trim()}); message('Reserva de IP confirmada pelo gateway.'); $('#detail-ip-status').textContent='Reserva confirmada pelo gateway.'; const data=await api('/api/reservations'); d.reservationId=data.reservations.find(r=>r.mac.toLowerCase()===d.mac)?.id || ''; button.textContent='Atualizar reserva';}catch(err){message(err.message,true)}finally{button.disabled=false}});
 function resetForm(){ $('#reservation').reset();$('#reservation-id').value='';$('#form-title').textContent='Nova reserva'; }
+let pendingReservationDelete=null;
 async function refreshReservations(){
   const data=await api('/api/reservations');reservations=data.reservations;const list=$('#list');list.replaceChildren();
   if(data.device_names_unavailable) list.append(node('p','notice','Não foi possível carregar os nomes do gateway; os identificadores locais continuam disponíveis.'));
   if(!reservations.length){list.append(node('p','empty','Nenhuma reserva encontrada.'));return;}
-  reservations.forEach(row=>{const card=node('div','reservation-row');const info=node('div');const network=node('small','muted');network.append(document.createTextNode(`${row.mac.toUpperCase()} · `),node('span',row.enabled===false?'':'ip-fixed',`${row.ip} · ${row.enabled===false?'Reserva desativada':'Reservado'}`));info.append(node('strong',row.name?'ip-fixed':'',row.name||'Identificador não definido'),network,node('small','muted',`Nome do dispositivo: ${row.gateway_name||row.hostname||'Não informado'}`));const edit=node('button','secondary','Editar');edit.type='button';edit.addEventListener('click',()=>{$('#reservation-id').value=row.id;$('#mac').value=row.mac.toUpperCase();$('#ip').value=row.ip;$('#name').value=row.name;$('#form-title').textContent='Editar reserva';$('#mac').focus()});card.append(info,edit);list.append(card)});
+  reservations.forEach(row=>{const card=node('div','reservation-row');const info=node('div');const network=node('small','muted');network.append(document.createTextNode(`${row.mac.toUpperCase()} · `),node('span',row.enabled===false?'':'ip-fixed',`${row.ip} · ${row.enabled===false?'Reserva desativada':'Reservado'}`));info.append(node('strong',row.name?'ip-fixed':'',row.name||'Identificador não definido'),network,node('small','muted',`Nome do dispositivo: ${row.gateway_name||row.hostname||'Não informado'}`));const actions=node('div','reservation-actions');const edit=node('button','secondary','Editar');edit.type='button';edit.addEventListener('click',()=>{$('#reservation-id').value=row.id;$('#mac').value=row.mac.toUpperCase();$('#ip').value=row.ip;$('#name').value=row.name;$('#form-title').textContent='Editar reserva';$('#mac').focus()});const remove=node('button','danger reservation-delete','Remover');remove.type='button';remove.addEventListener('click',()=>{pendingReservationDelete=row;$('#reservation-delete-details').textContent=`${row.name||row.gateway_name||row.hostname||'Dispositivo'} · ${row.mac.toUpperCase()} · ${row.ip}`;$('#reservation-delete-status').textContent='';$('#reservation-delete-dialog').showModal()});actions.append(edit,remove);card.append(info,actions);list.append(card)});
 }
+$('#reservation-delete-form').addEventListener('submit',async event=>{event.preventDefault();if(!pendingReservationDelete)return;const button=$('#confirm-reservation-delete');button.disabled=true;$('#reservation-delete-status').textContent='Removendo e conferindo no Huawei…';try{await api('/api/reservation/delete',{id:pendingReservationDelete.id,confirm:'REMOVER'});$('#reservation-delete-dialog').close();message('Reserva removida e conferida no Huawei.');pendingReservationDelete=null;await refreshReservations();}catch(error){$('#reservation-delete-status').textContent=error.message;message(error.message,true);}finally{button.disabled=false;}});
+$('#cancel-reservation-delete').addEventListener('click',()=>$('#reservation-delete-dialog').close());
+$('#reservation-delete-dialog').addEventListener('close',()=>{pendingReservationDelete=null;});
 async function loadGatewayModels(){const select=$('#gateway-model'); try{const {models}=await api('/api/gateway-types'); select.replaceChildren();const manual=node('option','','Selecione o modelo');manual.value='';select.append(manual); for(const model of models){const option=node('option','',model.label);option.value=model.id;select.append(option)} select.disabled=models.length===0; if(!models.length)message('Nenhum modelo de gateway disponível.',true);}catch(err){message('Não foi possível carregar os modelos: '+err.message,true)}}
 async function showDashboard(session){ $('#device-model').textContent=(session.model_label || 'Gateway')+(session.firmware?` · ${session.firmware}`:''); $('#login-screen').hidden=true; $('#dashboard').hidden=false; await refreshDevices(); clearInterval(deviceTimer); deviceTimer=setInterval(()=>{if(!document.hidden)refreshDevices()},15000); }
 $('#connect').addEventListener('submit',async e=>{e.preventDefault();if(!$('#gateway-model').value){setManualGateway(true);$('#gateway-model').focus();message('Selecione um modelo compatível para conectar.',true);return}message('Conectando...');try{const session=await api('/api/login',{model:$('#gateway-model').value,address:$('#address').value,username:$('#username').value,password:$('#password').value});if(window.isSecureContext && window.PasswordCredential && navigator.credentials){try{await navigator.credentials.store(new PasswordCredential({id:$('#username').value,password:$('#password').value}))}catch{}}$('#password').value='';message('Conectado.');await showDashboard(session)}catch(err){$('#password').value='';message(err.message,true)}});
@@ -192,6 +273,25 @@ async function loadNetworkConfig(page){
   const status=$(`#${page}-status`); status.textContent='Consultando gateway...';
   try{const {config:c}=await api('/api/dhcp'); if(page==='dhcp'){ $('#dhcp-enabled').checked=c.enabled; $('#dhcp-start').value=c.start; $('#dhcp-end').value=c.end; $('#dhcp-lease').value=c.lease; $('#dhcp-network').textContent=`Gateway ${c.lan_ip} · Máscara ${c.mask}`; } else {$('#dns-primary').value=c.dns_primary; $('#dns-secondary').value=c.dns_secondary;} status.textContent='Dados carregados do gateway.';}catch(e){status.textContent=e.message;}
 }
+async function loadStaticDns(){
+  await loadLocalRecords('dns');
+}
+$('#refresh-static-dns').addEventListener('click',loadStaticDns);
+async function loadIpv6(){
+  const settingsStatus=$('#ipv6-settings-status'), settingsList=$('#ipv6-settings-list');
+  const reservationsStatus=$('#ipv6-reservations-status'), reservationsList=$('#ipv6-reservations-list');
+  settingsStatus.textContent='Consultando DHCPv6 e RA…';settingsList.replaceChildren();reservationsStatus.textContent='Consultando reservas…';reservationsList.replaceChildren();
+  try{
+    const data=await api('/api/ipv6');
+    if(data.settings_recognized){settingsStatus.textContent=`${data.observations.length} campo(s) lido(s) do Huawei.`;for(const item of data.observations)settingsList.append(node('li','',`${item.label}: ${item.value}`));}
+    else{settingsStatus.textContent='Página acessível, mas os campos DHCPv6/RA não foram reconhecidos.';settingsList.append(node('li','muted','Nenhum valor foi presumido.'));}
+    renderLocalRecords('ipv6',data.local_records);
+    await loadDnsV6();
+  }catch(error){settingsStatus.textContent=error.message;reservationsStatus.textContent='Não foi possível consultar as reservas.';}
+}
+$('#refresh-ipv6').addEventListener('click',loadIpv6);
+async function loadPortIsolation(){const status=$('#port-isolation-status'),list=$('#port-isolation-list');status.textContent='Consultando campos de isolamento…';list.replaceChildren();try{const data=await api('/api/port-isolation');if(!data.recognized){status.textContent='Página acessível, mas o formato não foi reconhecido. Nenhum estado foi presumido.';return;}status.textContent=`${data.observations.length} campo(s) reconhecido(s) no Huawei.`;for(const item of data.observations)list.append(node('li','',`${item.label}: ${item.value}`));}catch(error){status.textContent=error.message;}}
+$('#refresh-port-isolation').addEventListener('click',loadPortIsolation);
 for(const page of ['dhcp','dns']){
   $(`#refresh-${page}`).addEventListener('click',()=>loadNetworkConfig(page));
   $(`#${page}-form`).addEventListener('submit',async e=>{e.preventDefault(); const button=e.submitter; button.disabled=true;
@@ -206,9 +306,11 @@ async function loadWifi(){
     const label=node('label','','Nome da rede'); const input=node('input'); input.value=n.ssid; input.required=true; input.maxLength=32; label.append(input);
     const enabledLabel=node('label','switch-label'), enabled=node('input'); enabled.type='checkbox'; enabled.checked=n.enabled; enabledLabel.append(enabled,document.createTextNode(' Rede ativada'));
     const broadcastLabel=node('label','switch-label'), broadcast=node('input'); broadcast.type='checkbox'; broadcast.checked=n.broadcast; broadcastLabel.append(broadcast,document.createTextNode(' Transmitir nome da rede'));
-    const details=node('p','footnote',`${n.id.split('.').pop()} · Limite de ${n.max_clients} clientes`); const button=node('button','primary','Salvar rede'); button.type='submit';
-    form.append(label,enabledLabel,broadcastLabel,details,button); panel.append(heading,form); area.append(panel);
-    form.addEventListener('submit',async e=>{e.preventDefault(); button.disabled=true; try{await api('/api/wifi',{id:n.id,ssid:input.value,enabled:enabled.checked,broadcast:broadcast.checked});message('Rede Wi-Fi confirmada pelo gateway.'); await loadWifi();}catch(err){message(err.message,true)}finally{button.disabled=false}});
+    const maximumLabel=node('label','','Limite de clientes'),maximum=node('input');maximum.type='number';maximum.min='1';maximum.max='64';maximum.value=n.max_clients;maximum.disabled=!n.max_clients_writable;maximumLabel.append(maximum);
+    const details=node('p','footnote',`${n.id.split('.').pop()} · Alterações podem interromper a conexão deste SSID.`); const button=node('button','primary','Revisar e salvar'); button.type='submit';
+    form.append(label,enabledLabel,broadcastLabel,maximumLabel,details,button); panel.append(heading,form); area.append(panel);
+    if(n.managed_by_mesh){input.disabled=enabled.disabled=broadcast.disabled=maximum.disabled=button.disabled=true;details.textContent='SSID de backhaul gerenciado pelo EasyMesh. Edição isolada indisponível.';}
+    form.addEventListener('submit',async e=>{e.preventDefault();const body={id:n.id,ssid:input.value,enabled:enabled.checked,broadcast:broadcast.checked,expected:{ssid:n.ssid,enabled:n.enabled,broadcast:n.broadcast,max_clients:n.max_clients},confirm:'WIFI'};if(n.max_clients_writable)body.max_clients=maximum.value;if(!confirm(`Aplicar na rede ${n.ssid}?\nNome: ${n.ssid} → ${body.ssid}\nAtivação: ${body.enabled?'Ativada':'Desativada'}\nDivulgação: ${body.broadcast?'Ativada':'Desativada'}\nLimite: ${maximum.value}\nClientes podem precisar se reconectar. Para recuperar o acesso, use cabo ou outro SSID.`))return;button.disabled=true; try{await api('/api/wifi',body);message('Rede Wi-Fi confirmada pelo gateway.'); await loadWifi();}catch(err){message(err.message,true)}finally{button.disabled=false}});
   });}catch(e){status.textContent=e.message;}
 }
 $('#refresh-wifi').addEventListener('click',loadWifi);

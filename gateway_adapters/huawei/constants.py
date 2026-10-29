@@ -1,0 +1,11 @@
+PATH = '/html/bbsp/dhcpstatic/dhcpstatic.asp'
+DHCP_PATH = '/html/bbsp/dhcpservercfg/dhcp2.asp'
+WIFI_PATH = '/html/amp/wlanbasic/WlanBasic.asp'
+STATIC_DNS_PATH = '/html/bbsp/dnsconfiguration/dnsconfigcommon.asp'
+LAN_ADDRESS_PATH = '/html/bbsp/dhcp/dhcp.asp'
+LAN_IPV6_PATH = '/html/bbsp/lanaddress/lanaddress.asp'
+IPV6_RESERVATIONS_PATH = '/html/bbsp/dhcpstaticaddr/dhcpstaticaddress.asp'
+PORT_ISOLATION_PATH = '/html/bbsp/portinfo/portisolate.asp'
+LAN_DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement'
+DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress'
+SSID_MAP = {'SSID1': '2,4 GHz', 'SSID2': '2,4 GHz · Convidados', 'SSID5': '5 GHz'}

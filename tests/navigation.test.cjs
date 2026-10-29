@@ -10,7 +10,7 @@ function element(dataset={}){
   return {dataset,hidden:false,textContent:'',classList:{toggle(key,on){on?values.add(key):values.delete(key);},contains(key){return values.has(key);}},setAttribute(k,v){attrs[k]=v;},removeAttribute(k){delete attrs[k];},attrs};
 }
 function fixture(){
-  const pages=Object.fromEntries(['devices','wifi','dhcp','reservations','dns','logs','notifications','maintenance','reboot'].map(key=>['#page-'+key,element()]));
+  const pages=Object.fromEntries(['devices','wifi','dhcp','reservations','dns','logs','notifications','maintenance','reboot','inventory','history','planning','diagnostic'].map(key=>['#page-'+key,element()]));
   for(const [key,page] of Object.entries(pages))page.id=key.slice(1);
   const buttons=[element({page:'devices'}),element({page:'devices',networkView:'blocked'}),element({page:'wifi'})];
   const panels=['online','offline','blocked'].map(view=>element({deviceView:view}));
@@ -49,4 +49,16 @@ test('maintenance import/export page is reachable and has its own breadcrumb',()
   vm.runInContext("setPage('maintenance')",context);
   assert.equal(controls['#page-maintenance'].hidden,false);
   assert.equal(controls['#breadcrumb'].textContent,'Importar / exportar');
+});
+
+test('internal network extension pages use their loader and preserve page selection',()=>{
+  const {context,controls}=fixture();const loaded=[];
+  context.window={networkPageLoaders:Object.fromEntries(['inventory','history','planning','diagnostic'].map(page=>[page,()=>loaded.push(page)]))};
+  vm.runInContext("Object.assign(pageLabels,{inventory:'Inventário e topologia',history:'Histórico da rede',planning:'Endereço LAN',diagnostic:'Diagnóstico interno'})",context);
+  for(const page of ['inventory','history','planning','diagnostic']){
+    vm.runInContext(`setPage('${page}')`,context);
+    assert.equal(controls['#page-'+page].hidden,false);
+    assert.equal(Object.values(controls).filter(control=>control.id?.startsWith('page-')&&!control.hidden).length,1);
+  }
+  assert.deepEqual(loaded,['inventory','history','planning','diagnostic']);
 });

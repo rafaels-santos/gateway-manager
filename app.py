@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import os
 import notifications
+import network_management
 
 ROOT = Path(__file__).parent
 STATIC = ROOT / 'static'
@@ -24,17 +25,12 @@ SESSIONS = {}
 LOCK = threading.Lock()
 MONITORS = {}
 MONITOR_LOCKS = {}
-PATH = '/html/bbsp/dhcpstatic/dhcpstatic.asp'
-DHCP_PATH = '/html/bbsp/dhcpservercfg/dhcp2.asp'
-WIFI_PATH = '/html/amp/wlanbasic/WlanBasic.asp'
-LAN_DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement'
-DOMAIN = 'InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress'
 PORTABLE_CONFIG_FORMAT = 'gateway-manager-network-config'
 PORTABLE_CONFIG_VERSION = 1
 DEVICE_TAGS = ('', 'IoT', 'Celulares', 'Computadores', 'Rede')
+HUAWEI_ONT_PRODUCT_URL = 'https://e.huawei.com/en/products/optical-terminal/eg8145x6-10'
+HUAWEI_SOFTWARE_URL = 'https://support.huawei.com/enterprise/en/software'
 DATA_DIR = Path(os.environ.get('DATA_DIR', str(ROOT / 'data')))
-# Observed on this gateway; override if the SSID assignments change.
-SSID_MAP = {'SSID1': '2,4 GHz', 'SSID2': '2,4 GHz · Convidados', 'SSID5': '5 GHz'}
 
 @contextmanager
 def labels():
@@ -48,6 +44,7 @@ def labels():
     db.execute('CREATE TABLE IF NOT EXISTS webhook_options (gateway TEXT PRIMARY KEY, options TEXT NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS webhook_state (gateway TEXT, mac TEXT, state TEXT NOT NULL, PRIMARY KEY(gateway,mac))')
     notifications.schema(db)
+    network_management.schema(db)
     try:
         if os.name != 'nt': os.chmod(DATA_DIR / 'labels.db', 0o600)
         with db:
@@ -55,381 +52,14 @@ def labels():
     finally:
         db.close()
 
-class GatewayError(ValueError):
-    pass
+from gateway_adapters.errors import GatewayError
+from gateway_adapters.parsers import parse_constructors
+from gateway_adapters.transport import NoRedirect
+from gateway_adapters.huawei import Gateway
+from gateway_adapters.huawei.constants import PATH, DHCP_PATH, WIFI_PATH, LAN_DOMAIN, DOMAIN, SSID_MAP
+from gateway_adapters.capabilities import capability_snapshot, record_capability
+from gateway_adapters.client_model import normalize_clients
 
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-def parse_constructors(page, name):
-    result = []
-    for raw in re.findall(r'new\s+' + re.escape(name) + r'\s*\(([^)]*)\)', page):
-        raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: '\\u00' + m.group(1), raw)
-        try: result.append(json.loads('[' + raw + ']'))
-        except (ValueError, TypeError): raise GatewayError('Formato de configuração do gateway não reconhecido.')
-    return result
-
-class Gateway:
-    model_id = 'huawei-eg8145x6-10'
-    model_label = 'Huawei EG8145X6-10'
-    detection_models = ['EG8145X6-10']
-    def __init__(self, address):
-        address = address.strip()
-        if '://' not in address:
-            address = 'http://' + address
-        parsed = urllib.parse.urlsplit(address)
-        try:
-            ip = ipaddress.ip_address(parsed.hostname or '')
-            port = parsed.port
-        except ValueError:
-            raise GatewayError('Informe um endereço IP válido do gateway.')
-        if parsed.scheme not in ('http', 'https') or not ip.is_private or ip.is_loopback or ip.is_link_local or parsed.username or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
-            raise GatewayError('Informe o IP privado do gateway, opcionalmente com http:// ou https:// e porta.')
-        self.base = '%s://%s%s' % (parsed.scheme, ('[' + str(ip) + ']') if ip.version == 6 else str(ip), ':' + str(port) if port else '')
-        self.cookies = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookies), NoRedirect())
-        self.lock = threading.RLock()
-        self.credentials = None
-
-    def request(self, path, data=None, *, referer='/', xhr=False, timeout=12, max_redirects=3):
-        payload = None if data is None else urllib.parse.urlencode(data).encode('utf-8')
-        headers = {'User-Agent': 'Mozilla/5.0', 'Referer': self.base + referer, 'Accept': 'text/html,*/*'}
-        if xhr:
-            headers['X-Requested-With'] = 'XMLHttpRequest'
-        if data is not None:
-            headers['Origin'] = self.base
-        req = urllib.request.Request(self.base + path, data=payload, headers=headers)
-        try:
-            with self.opener.open(req, timeout=timeout) as response:
-                if urllib.parse.urlsplit(path).path == '/login.cgi':
-                    print('Diagnóstico HTTP: etapa=/login.cgi; status=%s; cookies=%s; Set-Cookie=%s' % (response.status, ','.join(c.name for c in self.cookies) or 'nenhum', bool(response.headers.get_all('Set-Cookie'))), flush=True)
-                return response.read(2_000_000).decode('utf-8-sig', errors='replace')
-        except urllib.error.HTTPError as e:
-            if urllib.parse.urlsplit(path).path in ('/login.cgi', '/index.asp'):
-                location = urllib.parse.urlsplit(e.headers.get('Location', '')).path or 'nenhum'
-                print('Diagnóstico HTTP: etapa=%s; status=%s; destino=%s; cookies=%s; Set-Cookie=%s' % (urllib.parse.urlsplit(path).path, e.code, location, ','.join(c.name for c in self.cookies) or 'nenhum', bool(e.headers.get_all('Set-Cookie'))), flush=True)
-            if e.code in (301, 302, 303) and e.headers.get('Location', '').startswith('/') and not e.headers.get('Location', '').startswith('//'):
-                if max_redirects<=0: raise GatewayError('O gateway excedeu o limite de redirecionamentos.')
-                return self.request(e.headers['Location'],timeout=timeout,max_redirects=max_redirects-1)
-            stage = {'/': 'página inicial', '/asp/GetRandCount.asp': 'token de login', '/login.cgi': 'autenticação', '/index.asp': 'verificação da sessão', PATH: 'leitura das reservas', '/html/ssmp/common/GetRandToken.asp': 'token de configuração'}.get(urllib.parse.urlsplit(path).path, 'operação de reserva')
-            raise GatewayError('Gateway recusou a etapa %s (HTTP %s).' % (stage, e.code))
-        except (urllib.error.URLError, TimeoutError, OSError) as e:
-            raise GatewayError('Não foi possível acessar o gateway: %s' % e)
-
-    def login(self, user, password):
-        with self.lock:
-            page = self.request('/')
-            if 'EG8145X6' not in page:
-                raise GatewayError('O gateway não foi identificado como Huawei EG8145X6.')
-            # The gateway login page creates this language cookie before submitting.
-            cookie = http.cookiejar.Cookie(version=0, name='Cookie', value='body:Language:english:id=-1', port=None, port_specified=False, domain=urllib.parse.urlsplit(self.base).hostname, domain_specified=False, domain_initial_dot=False, path='/', path_specified=True, secure=False, expires=None, discard=True, comment=None, comment_url=None, rest={}, rfc2109=False)
-            self.cookies.set_cookie(cookie)
-            token = self.request('/asp/GetRandCount.asp', {}, xhr=True).strip()
-            if not token or len(token) > 256:
-                raise GatewayError('O gateway não retornou um token de login válido.')
-            result = self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
-            # Emit structural markers only: never print response text, tokens or credentials.
-            markers = ('document.cookie', 'location', 'window.name', 'Set-Cookie', 'login', 'error', 'fail', 'script', 'iframe', 'refresh', 'redirect', 'waiting', 'pagename', 'index.asp', 'login.asp')
-            destinations = re.findall(r"(?:pageName|location(?:\.href)?)\s*=\s*['\"](/(?:index\.asp|login\.asp)?)['\"]", result, re.I)
-            print('Diagnóstico da resposta: tamanho=%d; marcadores=%s; destino=%s' % (len(result), ','.join(m for m in markers if m.lower() in result.lower()) or 'nenhum', ','.join(destinations) or 'nenhum'), flush=True)
-            fail = re.search(r"(?:var\s+)?FailStat\s*=\s*['\"](\d+)['\"]", result)
-            print('Diagnóstico de login: página de login=%s; FailStat=%s; cookies=%s' % ('txt_Password' in result, fail.group(1) if fail else 'ausente', ','.join(c.name for c in self.cookies) or 'nenhum'), flush=True)
-            page = self.request('/index.asp')
-            if not re.search(r'logout', page, re.I):
-                raise GatewayError('Login não confirmado. Verifique usuário, senha e permissões.')
-            self.credentials = (user, password)
-
-    def devices(self):
-        page = self.request('/html/bbsp/common/GetLanUserDevInfo.asp')
-        if 'var UserDevinfo' not in page or 'function USERDevice' not in page:
-            if not self.credentials:
-                raise GatewayError('Não foi possível ler os dispositivos; a sessão pode ter expirado.')
-            self.login(*self.credentials)
-            page = self.request('/html/bbsp/common/GetLanUserDevInfo.asp')
-            if 'var UserDevinfo' not in page or 'function USERDevice' not in page:
-                raise GatewayError('Não foi possível ler os dispositivos após reconectar ao gateway.')
-        found = {}
-        for match in re.finditer(r'new\s+USERDevice\s*\(([^)]*)\)', page):
-            raw = match.group(1)
-            # The firmware emits JavaScript \xHH escapes, which JSON does not accept.
-            raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: '\\u00' + m.group(1), raw)
-            try:
-                fields = json.loads('[' + raw + ']')
-            except (ValueError, TypeError):
-                raise GatewayError('O formato de dispositivos do gateway não foi reconhecido.')
-            if len(fields) < 14:
-                raise GatewayError('O gateway retornou uma lista de dispositivos incompleta.')
-            domain, ip, mac, port, ip_type, _, status, kind, duration, hostname = fields[:10]
-            mac = mac.lower()
-            if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
-                continue
-            if kind.upper() not in ('ETH', 'WIFI', 'ONU'):
-                continue
-            device = {'id': domain, 'ip': ip, 'mac': mac, 'port': port,
-                             'status': status.lower(), 'type': 'wifi' if kind.upper() == 'WIFI' else 'lan',
-                             'hostname': hostname, 'gateway_name': fields[13],
-                             'duration': duration, 'ip_type': ip_type,
-                             'ipv4_enabled': fields[10], 'ipv6_enabled': fields[11],
-                             'network': SSID_MAP.get(port.upper(), 'Wi-Fi · rede não identificada') if kind.upper() == 'WIFI' else 'LAN'}
-            previous = found.get(mac)
-            if not previous or (device['status'] == 'online' and previous['status'] != 'online'):
-                found[mac] = device
-        return list(found.values())
-
-    def reservations_page(self):
-        page = self.request(PATH)
-        if 'DHCPStaticAddress' not in page or 'onttoken' not in page:
-            raise GatewayError('Sessão expirada ou tela de reservas indisponível para esta conta.')
-        return page
-
-    def dhcp_config(self):
-        page = self.request(DHCP_PATH)
-        pools, interfaces = parse_constructors(page, 'dhcpmainst'), parse_constructors(page, 'stipaddr')
-        if not pools or len(pools[0]) < 20 or not interfaces or len(interfaces[0]) < 4 or 'onttoken' not in page:
-            raise GatewayError('Configuração DHCP indisponível ou sessão expirada.')
-        p, lan = pools[0], interfaces[0]
-        dns = (p[16] or p[18]).split(',')
-        return {'enabled': p[1] == '1', 'start': p[2], 'end': p[3], 'lease': p[4], 'dns_primary': dns[0], 'dns_secondary': dns[1] if len(dns)>1 else '', 'lan_ip': lan[2], 'mask': lan[3]}
-
-    def config_token(self):
-        token = self.request('/html/ssmp/common/GetRandToken.asp', {}, xhr=True).strip()
-        if not re.fullmatch(r'[a-zA-Z0-9]{16,256}', token): raise GatewayError('Token de operação indisponível; nenhuma alteração foi feita.')
-        return token
-
-    def save_dhcp(self, body, dns_only=False):
-        with self.lock:
-            current = self.dhcp_config()
-            params = {}
-            if dns_only:
-                values = []
-                for key in ('dns_primary', 'dns_secondary'):
-                    value = str(body.get(key, '')).strip()
-                    if value:
-                        try: value = str(ipaddress.IPv4Address(value))
-                        except ValueError: raise GatewayError('Informe endereços IPv4 válidos para DNS.')
-                    values.append(value)
-                if not values[0] and values[1]: raise GatewayError('Informe o DNS primário antes do secundário.')
-                params['z.X_HW_DNSList'] = ','.join(v for v in values if v)
-            else:
-                if not isinstance(body.get('enabled'), bool): raise GatewayError('Estado DHCP inválido.')
-                try:
-                    start, end = (ipaddress.IPv4Address(body.get(k, '')) for k in ('start', 'end'))
-                    net = ipaddress.IPv4Network((current['lan_ip'], current['mask']), strict=False)
-                    lease = int(body.get('lease', ''))
-                except (ValueError, TypeError): raise GatewayError('Informe intervalo e tempo de concessão válidos.')
-                if start not in net or end not in net or start > end or start in (net.network_address, net.broadcast_address) or end in (net.network_address, net.broadcast_address) or start <= ipaddress.IPv4Address(current['lan_ip']) <= end or not 60 <= lease <= 31536000:
-                    raise GatewayError('Intervalo DHCP inválido para a rede ou concessão fora de 60 a 31536000 segundos.')
-                params.update({'z.DHCPServerEnable': int(body['enabled']), 'z.MinAddress': str(start), 'z.MaxAddress': str(end), 'z.DHCPLeaseTime': lease})
-            params['x.X_HW_Token'] = self.config_token()
-            url = '/set.cgi?' + urllib.parse.urlencode({'z': LAN_DOMAIN, 'RequestFile': DHCP_PATH.lstrip('/')})
-            self.request(url, params, referer=DHCP_PATH)
-            updated = self.dhcp_config()
-            expected = {'dns_primary': values[0], 'dns_secondary': values[1]} if dns_only else {'enabled': body['enabled'], 'start': str(start), 'end': str(end), 'lease': str(lease)}
-            if any(str(updated[k]) != str(v) for k,v in expected.items()):
-                raise GatewayError('O gateway não confirmou os valores. Confira no painel Huawei antes de tentar novamente.')
-            return updated
-
-    def wifi_config(self):
-        page = self.request(WIFI_PATH + '?2G')
-        match = re.search(r'var\s+WlanArr\s*=\s*new\s+Array\((.*?)\s*,\s*null\s*\)', page, re.S)
-        if not match: raise GatewayError('Configuração Wi-Fi indisponível ou sessão expirada.')
-        rows = []
-        for raw in re.findall(r'new\s+stWlan\s*\(([^)]*)\)', match.group(1)):
-            fields = re.findall(r'"(?:\\.|[^"\\])*"', raw)[:6]
-            if len(fields) != 6: raise GatewayError('Formato Wi-Fi não reconhecido.')
-            fields = [re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: '\\u00' + m.group(1), x) for x in fields]
-            rows.append(json.loads('[' + ','.join(fields) + ']'))
-        networks = []
-        for fields in rows:
-            if len(fields) < 6: continue
-            domain, _, enabled, ssid, broadcast, maximum = fields[:6]
-            match = re.fullmatch(r'InternetGatewayDevice\.LANDevice\.1\.WLANConfiguration\.(\d+)', domain)
-            if not match: continue
-            n = int(match.group(1))
-            networks.append({'id': domain, 'ssid': ssid, 'enabled': enabled == '1', 'broadcast': broadcast == '1', 'max_clients': maximum, 'network': SSID_MAP.get('SSID'+str(n), 'Rede não identificada')})
-        if not networks or 'onttoken' not in page: raise GatewayError('Configuração Wi-Fi indisponível ou sessão expirada.')
-        return networks
-
-    def save_wifi(self, body):
-        with self.lock:
-            existing = self.wifi_config()
-            target = next((n for n in existing if n['id'] == body.get('id')), None)
-            if not target: raise GatewayError('Rede Wi-Fi não encontrada; atualize a lista.')
-            ssid = str(body.get('ssid', '')).strip()
-            if not ssid or len(ssid.encode('utf-8')) > 32 or any(ord(c) < 32 for c in ssid): raise GatewayError('Informe um nome Wi-Fi de até 32 bytes.')
-            if any(n['ssid'] == ssid and n['id'] != target['id'] for n in existing): raise GatewayError('Já existe uma rede com esse nome.')
-            if not isinstance(body.get('enabled'), bool) or not isinstance(body.get('broadcast'), bool): raise GatewayError('Estado da rede inválido.')
-            params = {'y.SSID': ssid, 'y.Enable': int(body['enabled']), 'y.SSIDAdvertisementEnabled': int(body['broadcast']), 'x.X_HW_Token': self.config_token()}
-            url = '/set.cgi?' + urllib.parse.urlencode({'y': target['id'], 'RequestFile': WIFI_PATH.lstrip('/')})
-            self.request(url, params, referer=WIFI_PATH + '?2G')
-            updated = next((n for n in self.wifi_config() if n['id'] == target['id']), None)
-            if not updated or any(updated[k] != body[k] for k in ('ssid','enabled','broadcast')): raise GatewayError('O gateway não confirmou a rede. Confira no painel Huawei antes de tentar novamente.')
-            return updated
-
-    def reboot(self):
-        with self.lock:
-            token = self.config_token()
-            url = '/set.cgi?' + urllib.parse.urlencode({'x': 'InternetGatewayDevice.X_HW_DEBUG.SMP.DM.ResetBoard', 'RequestFile': '../CustomApp/mainpage.asp'})
-            self.request(url, {'x.X_HW_Token': token}, referer='/CustomApp/mainpage.asp')
-
-    def block_policy(self):
-        page = self.request('/html/bbsp/wlanmacfilter/wlanmacfilter.asp')
-        def flag(name):
-            match = re.search(r'var\s+' + name + r"\s*=\s*['\"]([01])['\"]", page)
-            if not match: raise GatewayError('Política de bloqueio não reconhecida.')
-            return match.group(1)
-        if 'onttoken' not in page or flag('FilterBySsidFlag') != '0': raise GatewayError('Modo de filtragem não suportado por esta integração.')
-        return {'enabled': flag('enableFilter') == '1', 'blacklist': flag('Mode') == '0', 'rules': parse_constructors(page, 'stMacFilter')}
-
-    def block_client(self, body):
-        with self.lock:
-            mac = str(body.get('mac', '')).lower()
-            if body.get('confirm') != 'BLOQUEAR': raise GatewayError('Confirmação de bloqueio inválida.')
-            device = next((d for d in self.devices() if d['mac'] == mac), None)
-            if not device or device['type'] != 'wifi' or not re.fullmatch(r'SSID[1-8]', device['port']): raise GatewayError('Bloqueio disponível apenas para clientes Wi-Fi com SSID identificado.')
-            policy = self.block_policy()
-            if not policy['blacklist']: raise GatewayError('O gateway usa lista de permissão; nenhuma alteração foi feita.')
-            if not policy['enabled'] and policy['rules']: raise GatewayError('Há regras desativadas no gateway. Revise-as no Huawei antes de ativar o filtro.')
-            if not policy['enabled'] and body.get('activate') is not True: raise GatewayError('Confirme a ativação do filtro Wi-Fi.')
-            path = '/html/bbsp/wlanmacfilter/wlanmacfilter.asp'
-            ssid = 'SSID-' + device['port'][4:]
-            with labels() as db:
-                saved = db.execute('SELECT name FROM labels WHERE gateway=? AND mac=?', (self.base, mac)).fetchone()
-            device_name = (saved[0] if saved and saved[0].strip() else device.get('gateway_name') or device.get('hostname') or '')[:80]
-            exists = any(len(r)>=4 and r[1]==ssid and r[3].lower()==mac for r in policy['rules'])
-            if not exists:
-                url = '/add.cgi?' + urllib.parse.urlencode({'x':'InternetGatewayDevice.X_HW_Security.WLANMacFilter','RequestFile':path.lstrip('/')})
-                self.request(url, {'x.SourceMACAddress':mac,'x.SSIDName':ssid,'x.DeviceName':device_name,'x.Enable':'1','x.X_HW_Token':self.config_token()}, referer=path)
-            if not policy['enabled']:
-                url = '/set.cgi?' + urllib.parse.urlencode({'x':'InternetGatewayDevice.X_HW_Security','RequestFile':path.lstrip('/')})
-                self.request(url, {'x.WlanMacFilterRight':'1','x.X_HW_Token':self.config_token()}, referer=path)
-            updated = self.block_policy()
-            if not updated['enabled'] or not updated['blacklist'] or not any(len(r)>=4 and r[1]==ssid and r[3].lower()==mac for r in updated['rules']): raise GatewayError('Bloqueio não confirmado. Confira o filtro no Huawei antes de tentar novamente.')
-
-    def blocked_clients(self, devices):
-        policy = self.block_policy()
-        if not policy['blacklist']: return []
-        by_mac = {d['mac']: d for d in devices}
-        result = []
-        for rule in policy['rules']:
-            if len(rule)<4: raise GatewayError('Formato de regra de bloqueio não reconhecido.')
-            domain, ssid, name, mac = rule[:4]
-            mac = mac.lower()
-            if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac): continue
-            port = ssid.replace('SSID-', 'SSID')
-            device = dict(by_mac.get(mac, {'mac':mac,'ip':'','hostname':name,'gateway_name':'','duration':'','ip_type':'','ipv6_enabled':''}))
-            device.update({'block_rule':domain,'block_active':policy['enabled'],'status':'blocked','type':'wifi','port':port,'network':SSID_MAP.get(port,'Wi-Fi · rede não identificada')})
-            result.append(device)
-        return result
-
-    def sync_block_device_name(self, mac, name):
-        with self.lock:
-            rules = self.block_policy()['rules']
-            targets = [r for r in rules if len(r)>=4 and r[3].lower()==mac and r[2]!=name]
-            path = '/html/bbsp/wlanmacfilter/wlanmacfilter.asp'
-            for rule in targets:
-                if not re.fullmatch(r'InternetGatewayDevice\.X_HW_Security\.WLANMacFilter\.\d+', rule[0]):
-                    raise GatewayError('Regra de bloqueio não reconhecida; nome não enviado.')
-                url = '/set.cgi?' + urllib.parse.urlencode({'x':rule[0], 'RequestFile':path.lstrip('/')})
-                self.request(url, {'x.DeviceName':name, 'x.X_HW_Token':self.config_token()}, referer=path)
-            if targets:
-                updated = {r[0]:r for r in self.block_policy()['rules'] if len(r)>=4}
-                if any(r[0] not in updated or updated[r[0]][2]!=name for r in targets):
-                    raise GatewayError('O Huawei não confirmou o Device Name da regra. Atualize antes de tentar novamente.')
-
-    def unblock_client(self, body):
-        with self.lock:
-            domain = str(body.get('rule',''))
-            mac = str(body.get('mac','')).lower()
-            if body.get('confirm') != 'DESBLOQUEAR' or not re.fullmatch(r'InternetGatewayDevice\.X_HW_Security\.WLANMacFilter\.\d+', domain): raise GatewayError('Regra ou confirmação inválida.')
-            rules = self.block_policy()['rules']
-            if not any(len(r)>=4 and r[0]==domain and r[3].lower()==mac for r in rules): raise GatewayError('Regra não encontrada; atualize a lista.')
-            path='/html/bbsp/wlanmacfilter/wlanmacfilter.asp'
-            self.request('/del.cgi?'+urllib.parse.urlencode({'RequestFile':path.lstrip('/')}), {domain:'','x.X_HW_Token':self.config_token()}, referer=path)
-            if any(r[0]==domain for r in self.block_policy()['rules']): raise GatewayError('A remoção não foi confirmada pelo Huawei; confira no painel antes de tentar novamente.')
-
-    def logs(self, source='user'):
-        paths={'user':'/html/ssmp/userlog/logview.asp','ap':'/html/ssmp/aplog/aplogview.asp'}
-        if source not in paths: raise GatewayError('Origem de logs não suportada.')
-        # Read the same page as Maintenance > User Log; never change logging settings.
-        page = self.request(paths[source])
-        match = re.search(r"document\.getElementById\([\"']logarea[\"']\)\.value\s*=\s*'((?:\\.|[^'\\])*)'", page)
-        if source=='ap': match=re.search(r"var\s+ApLogInfoText\s*=\s*'((?:\\.|[^'\\])*)'",page)
-        if not match:
-            raise GatewayError('Logs indisponíveis. Verifique a sessão e a permissão de leitura no Huawei.')
-        raw = re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m[1], 16)), match[1])
-        raw = raw.replace(r'\r', '\r').replace(r'\n', '\n').replace(r"\'", "'").replace(r'\\', '\\')
-        events = []
-        levels = {'info':'INFO', 'informational':'INFO', 'notice':'INFO', 'debug':'INFO',
-                  'warning':'WAR', 'warn':'WAR', 'error':'ERROR', 'critical':'ERROR',
-                  'alert':'ERROR', 'emergency':'ERROR'}
-        for line in raw.splitlines():
-            event = re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\[([^]]+)\]\[([^]]+)\]\s*(.*)$', line)
-            if event:
-                stamp, level, category, message = event.groups()
-                events.append({'time':stamp, 'level':levels.get(level.lower(), 'OTHER'),
-                               'source_level':level, 'category':category, 'message':message})
-            elif source=='ap' and line.strip():
-                ap_event=re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\[([^]]+)\]\s*(.*)$',line)
-                if ap_event:
-                    stamp,level,message=ap_event.groups()
-                    events.append({'time':stamp,'level':levels.get(level.lower(),'OTHER'),'source_level':level,'category':'AP','message':message})
-                elif events: events[-1]['message'] += '\n' + line
-            elif events and line.strip():
-                events[-1]['message'] += '\n' + line
-        return {'events':list(reversed(events[-1000:])), 'total':len(events),
-                'limited':len(events)>1000, 'source':source, 'raw':raw, 'categories':['Config-Log','Shell-Log','Alarm-Log'] if source=='user' else []}
-
-    def reservations(self):
-        page = self.reservations_page()
-        # Firmware serializes reservations as constructors in JavaScript.
-        rows = []
-        pattern = r'new\s+stDhcp\s*\(\s*"(InternetGatewayDevice\.LANDevice\.1\.LANHostConfigManagement\.DHCPStaticAddress\.\d+)"\s*,\s*"([01])"\s*,\s*"([^"\n]*)"\s*,\s*"([^"\n]*)"'
-        def decode(value):
-            return re.sub(r'\\x([0-9a-fA-F]{2})', lambda m: chr(int(m.group(1), 16)), value)
-        for domain, enabled, raw_ip, raw_mac in re.findall(pattern, page, re.I):
-            mac, ip = decode(raw_mac).lower(), decode(raw_ip)
-            if re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
-                try:
-                    ipaddress.IPv4Address(ip)
-                except ValueError:
-                    raise GatewayError('O gateway retornou um IP inválido.')
-                rows.append({'id': domain, 'mac': mac, 'ip': ip, 'enabled': enabled == '1'})
-        if not rows and re.search(r'DHCPStaticAddress\.\d+', page):
-            raise GatewayError('Formato de reservas não reconhecido; nenhuma alteração foi feita.')
-        return rows, page
-
-    def save(self, body):
-        with self.lock:
-            try:
-                ip = str(ipaddress.IPv4Address(body.get('ip', '')))
-            except ValueError:
-                raise GatewayError('Informe um IPv4 válido.')
-            mac = str(body.get('mac', '')).lower().strip()
-            if not re.fullmatch(r'[0-9a-f]{2}(?::[0-9a-f]{2}){5}', mac):
-                raise GatewayError('Informe um MAC válido, por exemplo aa:bb:cc:dd:ee:ff.')
-            requested_enabled = body.get('enabled')
-            if 'enabled' in body and not isinstance(requested_enabled, bool):
-                raise GatewayError('Estado da reserva inválido.')
-            rows, page = self.reservations()
-            domain = body.get('id', '')
-            if domain and domain not in [r['id'] for r in rows]:
-                raise GatewayError('Reserva não encontrada; atualize a lista.')
-            existing = next((row for row in rows if row['id'] == domain), None)
-            enabled = requested_enabled if requested_enabled is not None else (existing['enabled'] if existing else True)
-            if any(r['id'] != domain and (r['ip'] == ip or r['mac'] == mac) for r in rows):
-                raise GatewayError('Este IP ou MAC já está reservado.')
-            token = self.request('/html/ssmp/common/GetRandToken.asp', {}, xhr=True).strip()
-            if not re.fullmatch(r'[a-zA-Z0-9]{16,256}', token):
-                raise GatewayError('Token de operação indisponível; nenhuma alteração foi feita.')
-            action = 'set.cgi' if domain else 'add.cgi'
-            target = domain or DOMAIN
-            url = '/' + action + '?' + urllib.parse.urlencode({'x': target, 'RequestFile': PATH.lstrip('/')})
-            self.request(url, {'x.Yiaddr': ip, 'x.Chaddr': mac, 'x.Enable': str(int(enabled)), 'x.X_HW_Token': token})
-            updated, _ = self.reservations()
-            if not any(r['ip'] == ip and r['mac'] == mac and r['enabled'] == enabled for r in updated):
-                raise GatewayError('O gateway não confirmou a reserva. Verifique a interface original antes de tentar novamente.')
 
 def normalize_portable_config(value):
     """Validate and normalize the portable, LAN-only configuration format."""
@@ -588,6 +218,58 @@ def apply_portable_config(gateway, raw_config, *, import_devices, import_reserva
     return result
 
 
+Gateway.set_label_store_factory(labels)
+
+class HuaweiOnlyRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urlsplit(urllib.parse.urljoin(req.full_url, newurl))
+        host = (target.hostname or '').lower()
+        if target.scheme != 'https' or not (host == 'huawei.com' or host.endswith('.huawei.com')):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def firmware_status(gateway, check_online=False):
+    identity = getattr(gateway, 'identity', {}) or {}
+    checked_at = None
+    source_reachable = None
+    if check_online:
+        request = urllib.request.Request(HUAWEI_ONT_PRODUCT_URL, headers={'User-Agent': 'GatewayManager/1.0', 'Accept': 'text/html'})
+        opener = urllib.request.build_opener(HuaweiOnlyRedirect())
+        try:
+            with opener.open(request, timeout=8) as response:
+                final_host = (urllib.parse.urlsplit(response.geturl()).hostname or '').lower()
+                if response.status != 200 or not (final_host == 'huawei.com' or final_host.endswith('.huawei.com')):
+                    raise OSError('A página oficial não confirmou uma resposta Huawei segura.')
+                response.read(1024)
+            source_reachable = True
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            source_reachable = False
+            source_error = 'Não foi possível consultar a página oficial agora.'
+        else:
+            source_error = ''
+        checked_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    else:
+        source_error = ''
+    return {
+        'model': gateway.model_id,
+        'model_label': gateway.model_label,
+        'hardware': identity.get('hardware'),
+        'current': identity.get('firmware'),
+        'checked_at': checked_at,
+        'source_reachable': source_reachable,
+        'latest': None,
+        'available': [],
+        'download_url': None,
+        'source_url': HUAWEI_ONT_PRODUCT_URL,
+        'support_url': HUAWEI_SOFTWARE_URL,
+        'source_error': source_error,
+        'message': ('A página oficial do produto respondeu, mas não publica um catálogo de firmware para download deste ONT. A Huawei orienta obter a versão compatível com o provedor, pois o firmware precisa corresponder ao OLT/NMS.' if source_reachable else
+                    source_error if source_reachable is False else
+                    'A Huawei não publica nesta página uma lista de versões de firmware do ONT. A versão compatível deve ser confirmada com o provedor, considerando o OLT/NMS.')
+    }
+
+
 EVENTS = {
     'connected': ('Novo dispositivo', 'Um novo dispositivo foi conectado ao roteador,\nNome: {name}\nIP: {ip}\nMAC: {mac}\n{link}', True),
     'disconnected': ('Dispositivo desconectado', 'Dispositivo desconectado.\nNome: {name}\nIP: {ip}\nMAC: {mac}\n{link}', False),
@@ -710,9 +392,11 @@ def hook_service():
 def monitor_once(gw):
     service=hook_service(); rows=service.rows(gw.base)
     active=[json.loads(row[1]) for row in rows if json.loads(row[1])['enabled']]
-    if not active: return 'Notificações desativadas.'
     with gw.lock:
         devices=gw.devices()
+        with labels() as db:
+            network_management.observe_devices(db, gw.base, devices)
+        if not active: return 'Histórico ativo; notificações desativadas.'
         needs_block=any(h['events'][key]['enabled'] for h in active for key in ('blocked_ip_changed','blocked_disconnected'))
         blocked={d['mac']:d for d in gw.blocked_clients(devices)} if needs_block else {}
     with labels() as db:
@@ -770,6 +454,13 @@ def mark_fixed_addresses(devices, reservations):
         device['ip_fixed'] = (device['mac'].lower(), device['ip']) in reserved
         device['ip_static'] = device.get('ip_type', '').strip().lower() == 'static'
     return devices
+
+
+def capability_failure(error):
+    message = str(error)
+    if re.search(r'HTTP (?:401|403)', message): return 'denied'
+    if re.search(r'Informe|Confirmação|Confirme|inválid|já existe|não encontrada|fora de|limite de', message, re.I): return None
+    return 'unavailable'
 
 # Register only adapters that have been implemented and validated.
 def parse_gateway_identity(page):
@@ -850,6 +541,110 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {'connected': True, 'model': gw.model_id, 'model_label': gw.model_label, **getattr(gw,'identity',{})})
             except GatewayError as e: self.send_json(401, {'error': str(e)})
             return
+        if self.path == '/api/capabilities':
+            try:
+                self.send_json(200, capability_snapshot(self.session()))
+            except GatewayError as e: self.send_json(401, {'error': str(e)})
+            return
+        if self.path == '/api/network/inventory':
+            try:
+                gw = self.session()
+                with gw.lock:
+                    self.send_json(200, {'pages': list(gw.network_pages.values()), 'capabilities': capability_snapshot(gw)})
+            except GatewayError as error: self.send_json(400, {'error': str(error)})
+            return
+        if urllib.parse.urlsplit(self.path).path == '/api/local-records':
+            try:
+                gw = self.session()
+                kind = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get('kind', [''])[0]
+                with gw.lock: result = gw.local_records(kind)
+                feature = 'static_dns' if kind == 'dns' else 'ipv6_reservations'
+                record_capability(gw, feature, 'read', 'available' if result['recognized'] else 'unrecognized', result['reason'])
+                if not result['writable']: record_capability(gw, feature, 'write', 'unavailable', result['reason'])
+                self.send_json(200, result)
+            except GatewayError as error: self.send_json(400, {'error': str(error)})
+            return
+        if self.path == '/api/dnsv6':
+            try:
+                gw = self.session()
+                with gw.lock: result = gw.dnsv6_config()
+                record_capability(gw, 'dns_ipv6', 'read', 'available', 'Objeto local de DNSv6 reconhecido.')
+                self.send_json(200, result)
+            except GatewayError as error: self.send_json(400, {'error': str(error)})
+            return
+        if self.path in ('/api/wifi/security', '/api/wifi/radios'):
+            feature = 'wifi_security' if self.path.endswith('security') else 'wifi_radio'
+            try:
+                gw = self.session()
+                with gw.lock: result = gw.wifi_security() if feature == 'wifi_security' else gw.radio_config()
+                record_capability(gw, feature, 'read', 'available', 'Propriedades de Wi-Fi reconhecidas no firmware.')
+                self.send_json(200, {'config': result})
+            except GatewayError as error:
+                if 'gw' in locals(): record_capability(gw, feature, 'read', capability_failure(error), str(error))
+                self.send_json(400, {'error': str(error)})
+            return
+        if urllib.parse.urlsplit(self.path).path == '/api/network/history':
+            try:
+                gw = self.session()
+                params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                with labels() as db:
+                    result = network_management.history(db, gw.base, level=params.get('level', [''])[0], kind=params.get('kind', [''])[0], query=params.get('q', [''])[0], before=params.get('before', [None])[0])
+                self.send_json(200, result)
+            except GatewayError as error: self.send_json(400, {'error': str(error)})
+            return
+        if self.path == '/api/network/export':
+            try:
+                gw = self.session()
+                with gw.lock:
+                    pages = [{key: row[key] for key in ('id', 'label', 'status', 'sampled_at', 'recognized', 'observations', 'clients', 'reservations', 'leases', 'nodes') if key in row} for row in gw.network_pages.values()]
+                self.send_json(200, {'format': 'gateway-manager-lan-projection', 'version': 1, 'exported_at': network_management.utc_now(), 'model': gw.model_label, 'pages': pages,
+                                     'notice': 'Inventário de leitura. Não contém credenciais e não é um backup restaurável do Huawei.'})
+            except GatewayError as error: self.send_json(400, {'error': str(error)})
+            return
+        if self.path == '/api/static-dns':
+            try:
+                gw = self.session()
+                with gw.lock: result = gw.static_dns()
+                record_capability(gw, 'static_dns', 'read', 'available' if result['recognized'] else 'unrecognized',
+                                  'Objeto HOSTS e fonte de dados DNS locais reconhecidos.' if result['recognized'] else 'A fonte da tabela DNS local não foi reconhecida; nenhum valor foi presumido.')
+                self.send_json(200, result)
+            except GatewayError as error:
+                if 'gw' in locals(): record_capability(gw, 'static_dns', 'read', capability_failure(error), str(error))
+                self.send_json(400, {'error': str(error)})
+            return
+        if self.path == '/api/ipv6':
+            try:
+                gw = self.session()
+                with gw.lock: result = gw.ipv6_network()
+                record_capability(gw, 'dhcpv6_ra', 'read', 'available' if result['settings_recognized'] else 'unrecognized',
+                                  'Campos LAN IPv6 reconhecidos.' if result['settings_recognized'] else 'Página acessível, mas os campos DHCPv6/RA não foram reconhecidos.')
+                record_capability(gw, 'ipv6_reservations', 'read', 'available' if result['reservations_recognized'] else 'unrecognized',
+                                  'Tabela de reservas IPv6 reconhecida.' if result['reservations_recognized'] else 'Tabela IPv6 acessível, mas sem cabeçalhos reconhecidos.')
+                self.send_json(200, result)
+            except GatewayError as error:
+                if 'gw' in locals():
+                    record_capability(gw, 'dhcpv6_ra', 'read', capability_failure(error), str(error))
+                    record_capability(gw, 'ipv6_reservations', 'read', capability_failure(error), str(error))
+                self.send_json(400, {'error': str(error)})
+            return
+        if self.path == '/api/port-isolation':
+            try:
+                gw = self.session()
+                with gw.lock: result = gw.port_isolation()
+                record_capability(gw, 'port_isolation', 'read', 'available' if result['recognized'] else 'unrecognized',
+                                  'Campos de isolamento de portas reconhecidos.' if result['recognized'] else 'Página acessível, mas os campos de isolamento não foram reconhecidos.')
+                self.send_json(200, result)
+            except GatewayError as error:
+                if 'gw' in locals(): record_capability(gw, 'port_isolation', 'read', capability_failure(error), str(error))
+                self.send_json(400, {'error': str(error)})
+            return
+        if self.path == '/api/firmware':
+            try:
+                gw = self.session()
+                with gw.lock: session_identity(gw)
+                self.send_json(200, firmware_status(gw))
+            except GatewayError as e: self.send_json(401, {'error': str(e)})
+            return
         if self.path == '/api/maintenance/export':
             try:
                 gw = self.session()
@@ -870,50 +665,66 @@ class Handler(BaseHTTPRequestHandler):
                 gw = self.session()
                 source = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get('source',['user'])[0]
                 with gw.lock: result = gw.logs(source)
+                record_capability(gw, 'user_logs' if source == 'user' else 'ap_logs', 'read', 'available')
                 self.send_json(200, result)
-            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            except GatewayError as e:
+                if 'gw' in locals(): record_capability(gw, 'user_logs' if locals().get('source') == 'user' else 'ap_logs', 'read', capability_failure(e), str(e))
+                self.send_json(400, {'error': str(e)})
             return
         if self.path in ('/api/dhcp', '/api/wifi'):
             try:
                 gw = self.session()
                 with gw.lock: result = gw.dhcp_config() if self.path == '/api/dhcp' else gw.wifi_config()
+                record_capability(gw, 'dhcp_ipv4' if self.path == '/api/dhcp' else 'wifi_ssids', 'read', 'available')
                 self.send_json(200, {'config': result})
-            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            except GatewayError as e:
+                if 'gw' in locals(): record_capability(gw, 'dhcp_ipv4' if self.path == '/api/dhcp' else 'wifi_ssids', 'read', capability_failure(e), str(e))
+                self.send_json(400, {'error': str(e)})
             return
         if self.path == '/api/devices':
             try:
                 gateway = self.session()
                 with gateway.lock:
                     rows = gateway.devices()
+                    with labels() as db:
+                        network_management.observe_devices(db, gateway.base, rows)
+                    record_capability(gateway, 'clients', 'read', 'available')
                     try:
                         reservations, _ = gateway.reservations()
                         mark_fixed_addresses(rows, reservations)
                         reservations_available = True
-                    except GatewayError:
+                        record_capability(gateway, 'reservations_ipv4', 'read', 'available')
+                    except GatewayError as error:
                         for row in rows:
                             row['ip_fixed'] = False
                             row['ip_static'] = row.get('ip_type', '').strip().lower() == 'static'
                         reservations_available = False
+                        record_capability(gateway, 'reservations_ipv4', 'read', capability_failure(error), str(error))
                     try:
                         blocked = gateway.blocked_clients(rows)
                         blocked_available = True
-                    except GatewayError:
+                        record_capability(gateway, 'wifi_access_policy', 'read', 'available')
+                    except GatewayError as error:
                         blocked = []
                         blocked_available = False
+                        record_capability(gateway, 'wifi_access_policy', 'read', capability_failure(error), str(error))
                 with labels() as db:
                     saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
                     tags = dict(db.execute('SELECT mac,tag FROM device_tags WHERE gateway=?', (gateway.base,)))
                 for row in rows + blocked:
                     row['name'] = saved.get(row['mac'], '')
                     row['tag'] = tags.get(row['mac'], '')
-                self.send_json(200, {'devices': rows, 'blocked': blocked, 'blocked_available': blocked_available, 'reservations_available': reservations_available})
-            except GatewayError as e: self.send_json(400, {'error': str(e)})
+                self.send_json(200, {'devices': rows, 'blocked': blocked, 'clients': normalize_clients(rows, blocked, saved, tags, reservations if reservations_available else [], getattr(gateway, 'dhcpv6_clients', []), getattr(gateway, 'lan_port_statuses', {})), 'blocked_available': blocked_available, 'reservations_available': reservations_available})
+            except GatewayError as e:
+                if 'gateway' in locals(): record_capability(gateway, 'clients', 'read', capability_failure(e), str(e))
+                self.send_json(400, {'error': str(e)})
             return
         if self.path == '/api/reservations':
             try:
                 gateway = self.session()
                 with gateway.lock:
                     rows, _ = gateway.reservations()
+                    record_capability(gateway, 'reservations_ipv4', 'read', 'available')
                     try:
                         devices = gateway.devices()
                         names_unavailable = False
@@ -923,9 +734,11 @@ class Handler(BaseHTTPRequestHandler):
                 with labels() as db:
                     saved = dict(db.execute('SELECT mac,name FROM labels WHERE gateway=?', (gateway.base,)))
                 self.send_json(200, {'reservations': enrich_reservations(rows, devices, saved), 'device_names_unavailable': names_unavailable})
-            except GatewayError as e: self.send_json(400, {'error': str(e)})
+            except GatewayError as e:
+                if 'gateway' in locals(): record_capability(gateway, 'reservations_ipv4', 'read', capability_failure(e), str(e))
+                self.send_json(400, {'error': str(e)})
             return
-        files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'), '/icon.png': ('icon.png', 'image/png'), '/huawei.png': ('huawei.png', 'image/png')}
+        files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/network.js': ('network.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'), '/icon.png': ('icon.png', 'image/png'), '/huawei.png': ('huawei.png', 'image/png')}
         path = urllib.parse.urlsplit(self.path).path
         if path not in files: self.send_error(404); return
         name, mime = files[path]; data = (STATIC / name).read_bytes()
@@ -941,6 +754,59 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
             if self.path == '/api/detect':
                 self.send_json(200,detect_gateway(str(body.get('address',''))))
+            elif self.path == '/api/firmware/check':
+                gw = self.session()
+                with gw.lock: session_identity(gw)
+                self.send_json(200, firmware_status(gw, check_online=True))
+            elif self.path == '/api/capabilities/inspect':
+                gw = self.session()
+                with gw.lock:
+                    pages = gw.inspect_network_pages()
+                    with labels() as db: network_management.observe_pages(db, gw.base, pages)
+                self.send_json(200, {**capability_snapshot(gw), 'pages': pages})
+            elif self.path == '/api/network/inventory/refresh':
+                gw = self.session()
+                features = body.get('features')
+                if features is not None and (not isinstance(features, list) or not all(isinstance(item, str) for item in features)):
+                    raise GatewayError('Seleção de inventário inválida.')
+                with gw.lock:
+                    pages = gw.inspect_network_pages(features)
+                    with labels() as db: network_management.observe_pages(db, gw.base, pages)
+                    result = {'pages': list(gw.network_pages.values()), 'capabilities': capability_snapshot(gw)}
+                self.send_json(200, result)
+            elif self.path == '/api/network/lan-preview':
+                gw = self.session()
+                with gw.lock:
+                    result = network_management.preview_lan(gw.dhcp_config(), gw.reservations()[0], gw.devices(), body)
+                self.send_json(200, result)
+            elif self.path in ('/api/local-records', '/api/dnsv6'):
+                gw = self.session()
+                feature = 'static_dns' if body.get('kind') == 'dns' else 'ipv6_reservations' if self.path == '/api/local-records' else 'dns_ipv6'
+                try:
+                    result = gw.save_local_record(body) if self.path == '/api/local-records' else gw.save_dnsv6(body)
+                except GatewayError as error:
+                    record_capability(gw, feature, 'write', capability_failure(error), str(error)); raise
+                record_capability(gw, feature, 'write', 'verified')
+                with labels() as db:
+                    network_management.event(db, gw.base, 'configuration_changed', 'Alteração de DNS local ou reserva IPv6 confirmada por releitura.', evidence='confirmed')
+                self.send_json(200, result)
+            elif self.path in ('/api/wifi/security', '/api/wifi/radios'):
+                gw = self.session()
+                feature = 'wifi_security' if self.path.endswith('security') else 'wifi_radio'
+                try: result = gw.save_wifi_security(body) if feature == 'wifi_security' else gw.save_radio(body)
+                except GatewayError as error:
+                    record_capability(gw, feature, 'write', capability_failure(error), str(error)); raise
+                record_capability(gw, feature, 'write', 'verified')
+                with labels() as db: network_management.event(db, gw.base, 'configuration_changed', 'Alteração de autenticação Wi-Fi ou potência confirmada por releitura.', evidence='confirmed')
+                self.send_json(200, {'config': result})
+            elif self.path == '/api/network/diagnostic':
+                gw = self.session()
+                with gw.lock:
+                    current, devices = gw.dhcp_config(), gw.devices()
+                result = network_management.tcp_diagnostic(current, devices, body.get('target'), body.get('port'))
+                with labels() as db:
+                    network_management.event(db, gw.base, 'diagnostic', f'Diagnóstico TCP {result["target"]}:{result["port"]} · {result["description"]}', evidence='confirmed', level='INFO' if result['outcome'] == 'reachable' else 'WAR')
+                self.send_json(200, result)
             elif self.path == '/api/maintenance/preview':
                 gw = self.session()
                 with gw.lock: result = preview_portable_config(gw, body.get('config'))
@@ -968,16 +834,36 @@ class Handler(BaseHTTPRequestHandler):
                 start_monitor(gw)
                 self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label, **identity}, key)
             elif self.path == '/api/block':
-                self.session().block_client(body); self.send_json(200, {'ok': True})
+                gw = self.session()
+                try: gw.block_client(body)
+                except GatewayError as error: record_capability(gw, 'wifi_access_policy', 'write', capability_failure(error), str(error)); raise
+                record_capability(gw, 'wifi_access_policy', 'write', 'verified'); self.send_json(200, {'ok': True})
             elif self.path == '/api/unblock':
-                self.session().unblock_client(body); self.send_json(200, {'ok': True})
+                gw = self.session()
+                try: gw.unblock_client(body)
+                except GatewayError as error: record_capability(gw, 'wifi_access_policy', 'write', capability_failure(error), str(error)); raise
+                record_capability(gw, 'wifi_access_policy', 'write', 'verified'); self.send_json(200, {'ok': True})
             elif self.path == '/api/reservation':
-                self.session().save(body); self.send_json(200, {'ok': True})
+                gw = self.session()
+                try: gw.save(body)
+                except GatewayError as error: record_capability(gw, 'reservations_ipv4', 'write', capability_failure(error), str(error)); raise
+                record_capability(gw, 'reservations_ipv4', 'write', 'verified'); self.send_json(200, {'ok': True})
+            elif self.path == '/api/reservation/delete':
+                gw = self.session()
+                try: deleted = gw.delete_reservation(body)
+                except GatewayError as error: record_capability(gw, 'reservations_ipv4', 'write', capability_failure(error), str(error)); raise
+                record_capability(gw, 'reservations_ipv4', 'write', 'verified'); self.send_json(200, {'deleted': deleted})
             elif self.path in ('/api/dhcp', '/api/dns'):
-                config = self.session().save_dhcp(body, dns_only=self.path == '/api/dns')
+                gw = self.session(); feature = 'dns_lan' if self.path == '/api/dns' else 'dhcp_ipv4'
+                try: config = gw.save_dhcp(body, dns_only=self.path == '/api/dns')
+                except GatewayError as error: record_capability(gw, feature, 'write', capability_failure(error), str(error)); raise
+                record_capability(gw, feature, 'write', 'verified')
                 self.send_json(200, {'config': config})
             elif self.path == '/api/wifi':
-                config = self.session().save_wifi(body)
+                gw = self.session()
+                try: config = gw.save_wifi(body)
+                except GatewayError as error: record_capability(gw, 'wifi_ssids', 'write', capability_failure(error), str(error)); raise
+                record_capability(gw, 'wifi_ssids', 'write', 'verified')
                 self.send_json(200, {'config': config})
             elif self.path == '/api/reboot':
                 if body.get('confirm') != 'REINICIAR': raise GatewayError('Confirmação de reinício inválida.')

@@ -4,7 +4,7 @@ Inspeção em 28/10/2026 · Huawei EG8145X6-10 · HW 343D.D · SW V5R024C10S106.
 
 ## Objetivo e limites
 
-Usar o Gateway Manager como painel da rede interna: clientes, Wi-Fi, endereçamento, nomes locais, controle de acesso e diagnóstico. Nesta etapa foram alterados somente a navegação do app e documentos do projeto.
+Usar o Gateway Manager como painel da rede interna: clientes, Wi-Fi, endereçamento, nomes locais, controle de acesso e diagnóstico. A navegação foi reorganizada; a implementação inicial da Fase 1 está registrada abaixo.
 
 A inspeção do roteador foi somente de leitura. Não foram acionados Apply, Save, Start, exclusões, alterações de campos, ativação de filtros, reinícios ou diagnósticos. Não se executou varredura de portas, descoberta ativa de clientes nem teste de bloqueio.
 
@@ -41,13 +41,13 @@ O arquivo portátil versão 1 leva identificadores/categorias locais por MAC e r
 | --- | --- | --- |
 | Clientes e identidade | Listagem já integrada por MAC; informações de LAN, Wi-Fi e estado | Manter identidade global por gateway/MAC. Separar apelido do app, nome informado pelo cliente, nome de regra e nome DNS; não prometer que são o mesmo campo |
 | DHCP IPv4 | Página conhecida `/html/bbsp/dhcpservercfg/dhcp2.asp` | Já edita ativação, intervalo e concessão. Inventariar os campos adicionais antes de expandir, preservando opções não editadas |
-| Reservas IPv4 | `/html/bbsp/dhcpstatic/dhcpstatic.asp` | Já cria/edita reservas e verifica a resposta. Avaliar remoção de reserva e conflitos em fase posterior; verde/Fixo apenas quando reserva efetiva corresponder ao MAC/IP |
+| Reservas IPv4 | `/html/bbsp/dhcpstatic/dhcpstatic.asp` | Cria/edita reservas, detecta conflitos e agora permite remoção verificada por releitura; verde/Fixo apenas quando reserva efetiva corresponder ao MAC/IP |
 | LAN Host | Campos lidos em `/html/bbsp/dhcp/dhcp.asp`: endereço primário, máscara e endereço secundário | Novo formulário futuro. Mudança de IP exige coerência com DHCP e recuperação da conexão; não confundir IP secundário com isolamento de rede |
 | DHCPv6 e RA | Campos lidos em `/html/bbsp/lanaddress/lanaddress.asp`: servidor, RA, DHCPv6/SLAAC, DNS da LAN, MTU e ULA | Começar com leitura. Escrita apenas de propriedades da LAN; excluir seleção de WAN, delegação e mudanças no prefixo da operadora |
 | Reservas IPv6 | Campos lidos em `/html/bbsp/dhcpstaticaddr/dhcpstaticaddress.asp`: MAC e identificador de interface | Novo recurso condicionado ao modo DHCPv6. O próprio Huawei informa que não tem efeito com atribuição SLAAC |
 | Concessões/informação DHCPv6 | Menu DHCPv6 Information observado | Inspecionar página e representação dos clientes antes de implementar; não inferir IPv6 ativo apenas por um indicador de capacidade |
 | DNS da LAN | DNS entregue por DHCP já integrado | Manter distinto de DNS usado pelo próprio gateway e das políticas globais de resolução |
-| DNS estático | Campos lidos em `/html/bbsp/dnsconfiguration/dnsconfigcommon.asp`: associação Domain Name/IP Address | Prioridade para nomes locais. Não alterar DNS template ou DNS Search List com vínculo WAN presentes na mesma página |
+| DNS estático | Campos lidos em `/html/bbsp/dnsconfiguration/dnsconfigcommon.asp`: associação Domain Name/IP Address | Aba somente leitura criada para exibir a tabela quando o parser reconhecer cabeçalhos Domain Name/IP Address. Escrita segue pendente até confirmar o objeto TR-069 e excluir os campos DNS template/Search List associados à WAN |
 | SSIDs | Campos lidos em `WlanBasic.asp?2G`: nome, ativação, máximo de clientes, divulgação, WMM, autenticação, criptografia, PSK, WPS; menu equivalente de 5 GHz observado | Hoje nome/ativação/divulgação. Expandir limite de clientes e segurança por SSID; confirmar equivalência e restrições de cada banda. Nunca devolver PSK salvo ao navegador |
 | Rádios 2,4/5 GHz | Campos avançados consultados em `WlanAdvance.asp`: potência, canal, largura, padrão, Airtime Fairness, DTIM, Beacon, RTS, fragmentação; Band Steering observado em 5 GHz | Começar por leitura e edição de canal/largura/potência com opções retornadas pelo firmware. Preservar domínio regulatório atual, sem expor mudança de país como ajuste comum |
 | Convidados e isolamento Wi-Fi | SSID secundário existente; controle de isolamento não exposto na página básica consultada | Expor capacidades reais e aviso de isolamento não confirmado. Nome Convidados, senha diferente ou faixa diferente não comprovam segregação |
@@ -83,11 +83,31 @@ O arquivo portátil versão 1 leva identificadores/categorias locais por MAC e r
 
 Aceite: a conta de menor privilégio não recebe botões de escrita presumidos; leituras que falham mostram indisponibilidade; os clientes não são duplicados entre telas; a inspeção não altera o roteador.
 
+#### Implementação inicial da Fase 1 — 28/10/2026
+
+- O transporte, a sessão/autenticação e os módulos de operações Huawei foram separados em `gateway_adapters/transport.py` e `gateway_adapters/huawei/`. Parsers de clientes, DHCP, Wi-Fi, reservas, bloqueios e logs ficam em `gateway_adapters/parsers.py`.
+- Foi criado um registro de capacidades por sessão autenticada. Ele não presume privilégios pelo modelo: cada leitura começa como não consultada, alterações não oferecidas aparecem como tal e uma escrita só é marcada como confirmada após o fluxo existente de releitura concluir com sucesso.
+- A página **Monitoramento → Capacidades** exibe modelo, firmware/hardware disponíveis e estado de leitura/alteração por recurso. **Inspecionar páginas** faz somente GET às páginas internas documentadas e descobre System Information e DHCPv6 Information apenas por links internos do menu da sessão. Não envia formulários nem altera o roteador. Parsers conservadores extraem campos LAN em allowlist: IPv4 LAN/máscara, campos DHCPv6/RA/ULA/MTU, tabela DNS local com cabeçalhos explícitos, estado das portas LAN1–LAN4 quando a tabela identifica porta/status, e endereços IPv6 por MAC quando a tabela DHCPv6 identifica os dois cabeçalhos. Valor não reconhecido ou formato diferente não é inferido; senhas, tokens, campos ocultos, identificadores de série e dados de páginas fora do escopo são excluídos.
+- O modelo canônico reúne online, offline e bloqueados por MAC normalizado, com endereço IPv4 observado, interface/rede, estado, tempo quando disponível, reserva e status de bloqueio. Distingue identificador local, nome reportado pelo cliente, nome de regra do roteador e nome DNS. Registra a fonte de cada campo. Endereços IPv6 só são associados ao MAC quando a tabela DHCPv6 Information contém cabeçalhos inequívocos de MAC e endereço e cada valor passa pela validação IPv6; o indicador IPv6 legado não é apresentado como endereço.
+- Nesta execução, não havia sessão autenticada do app conectada ao Huawei para confirmar os parsers no firmware. System Information, DHCPv6 Information e páginas LAN secundárias não foram consultadas nesta sessão. A ação de inspeção fica disponível após o login e atualiza os estados daquela sessão.
+- A inspeção registra nomes de controles não sensíveis e valores somente quando um parser allowlist reconhece o campo. Respostas que indicam a tela de login são tratadas como sessão expirada/indisponível. A página alcançável sem campo reconhecido aparece como formato não reconhecido, sem substituir isso por valores estimados.
+
+**Validação atualizada da Fase 1:** uma nova inspeção de leitura reconferiu as fontes Ethernet, Layer 2/3, DNS local, DHCPv6 e EasyMesh, conforme o registro de continuação abaixo. A execução dos leitores integrados no app com a sessão real e o aceite operacional permanecem pendentes; DUID não é associado a MAC sem evidência. A aplicação não deve interpretar “página acessível” como permissão de escrita.
+
+#### Continuação da Fase 2 — 28/10/2026
+
+- Reservas IPv4 agora permitem remoção individual com confirmação na interface. O adaptador valida o identificador fixo da reserva, lê a linha atual, envia a exclusão somente para aquele domínio/IP/MAC e relê a tabela; o app só informa sucesso se a linha deixar de existir.
+- Foi criada a tela **LAN e IPs → Nomes DNS locais**, separada do DNS entregue por DHCP. A leitura faz GET à página de DNS estático e exibe somente tabelas que tenham cabeçalhos explícitos `Domain Name` e `IP Address`; não lê DNS Template/DNS Search List e não oferece gravação.
+- O inventário agora reconhece reservas IPv6 somente em tabelas com cabeçalhos explícitos MAC e Interface ID/IPv6 Address. Elas aparecem na inspeção de capacidades, separadas dos endereços IPv6 observados em concessões; ainda não são enviadas como endereços ativos do cliente.
+- Foi adicionada a tela **LAN e IPs → IPv6 e DHCPv6**, somente leitura, para consultar os campos DHCPv6/RA reconhecidos e as reservas IPv6 reconhecidas. A página também diferencia tabela vazia de formato não reconhecido.
+- Foi adicionada a consulta **Segurança → Isolamento de portas**, somente leitura, para mostrar apenas controles que o parser allowlist reconhece na página LAN do Huawei. A tela informa que a eficácia depende do modo Layer 2/3 e não representa isolamento Wi-Fi nem segregação completa da rede.
+- Nenhuma alteração foi enviada ao Huawei nesta continuação. O formato real de exclusão e de tabela DNS continua condicionado a conferência pela sessão do usuário antes de usar as operações no roteador.
+
 ### Fase 2 — Endereçamento e nomes locais
 
-1. Completar concessões e reservas IPv4, incluindo remoção verificada e detecção de conflitos.
-2. Implementar registros DNS estáticos de nomes locais, com operações limitadas à tabela local, sem alterar as demais políticas da página.
-3. Adicionar reservas e DNS IPv6 conforme capacidades; explicar a dependência de DHCPv6 versus SLAAC.
+1. Completar concessões e reservas IPv4, incluindo remoção verificada e detecção de conflitos. Criação, edição, conflitos e remoção têm implementação; exclusão confere a lista relida antes de informar sucesso.
+2. Implementar registros DNS estáticos de nomes locais, com operações limitadas à tabela local, sem alterar as demais políticas da página. CRUD foi implementado após conferir o objeto HOSTS e a fonte da tabela, com estado esperado e releitura completa.
+3. Adicionar reservas e DNS IPv6 conforme capacidades; explicar a dependência de DHCPv6 versus SLAAC. CRUD de reservas e configuração de DNSv6 LAN foram implementados; a reserva permanece indisponível na condição SLAAC observada.
 4. Só depois implementar alteração de endereço/máscara LAN, com prévia de impacto, validação conjunta com DHCP e instruções de reconexão ao novo IP.
 
 Aceite: mudanças preservam campos não editados e estado externo; leitura posterior confirma o resultado; falhas nunca são apresentadas como sucesso. Validar resolução usando um cliente que realmente utilize o DNS da LAN.
@@ -119,6 +139,37 @@ Aceite: testar serviços reais entre clientes e acesso à administração, em IP
 - Segredos nunca são devolvidos nem incluídos em logs, URLs de notificações ou documentos. Permissões e recursos devem ser verificados novamente após reconexão.
 - Identificadores locais, DNS e nomes do gateway têm semânticas diferentes e não serão sincronizados silenciosamente.
 
-## Próxima entrega recomendada
+## Continuação implementada em 28/10/2026
 
-**Fase 1: capacidades por sessão e inventário LAN somente de leitura**, dando prioridade a portas/isolamento e DNS estático. Essa base permite escolher com evidência as próximas operações, sem expor controles externos ou prometer funções não suportadas.
+Esta atualização amplia as fases, mas não marca o plano inteiro como concluído. Foi feita nova inspeção de leitura no painel autenticado; hardware `343D.D`, software `V5R024C10S106` e personalização `BREBG2` foram conferidos. Nenhuma gravação, reinício, ativação de filtro ou teste de isolamento foi executado no equipamento.
+
+| Parte | Implementação nesta continuação | Limite atual |
+| --- | --- | --- |
+| Inventário | Tela própria com horários, atualização completa/por recurso e exportação de projeção LAN sem segredos | Projeção não é um backup restaurável da ONT |
+| Ethernet | Fonte conferida `/html/amp/ethinfo/ethinfo.asp`: `GEInfo` e `LANStats` para estado, modo, velocidade e contadores LAN de 64 bits | Não coleta estatísticas GPON/WAN; não zera contadores |
+| Layer 2/3 | Leitura de `stLayer3Enable` em `/html/bbsp/layer3/layer3.asp` | As quatro portas observadas estão em Layer 3; o próprio painel desabilita Port Isolation. Não converte portas automaticamente |
+| IPv6 | Concessões em `/html/bbsp/dhcpv6info/dhcpv6info.asp`, construtor `DhcpInfoClass` | DUID, endereço/prefixo e concessão são exibidos separadamente; DUID não é convertido em MAC |
+| DNS local | Criar, editar e remover exclusivamente `InternetGatewayDevice.X_HW_DNS.HOSTS`, com dados de `/html/bbsp/common/dnshostslist.asp` | Detecta estado desatualizado e relê toda a tabela; DNS template e Search List ficam fora da operação |
+| Reservas IPv6 | CRUD de `X_HW_DHCPv6.Server.StaticAllocation`, MAC e InterfaceID de 64 bits | A rede observada usa SLAAC. A gravação fica indisponível quando ManagedFlag não confirma atribuição DHCPv6 |
+| DNSv6 | Servidores estáticos da LAN no objeto `LANDevice.1.X_HW_IPv6Config` | Preserva seleção externa, prefixos, RA, ULA e delegação; não muda o método de atribuição |
+| IP/máscara LAN | Prévia com DHCP atual, conflitos de clientes, reservas afetadas e roteiro de reconexão | A gravação efetiva ainda depende de validar atualização conjunta e recuperação de acesso |
+| SSID | Limite de 1–64 clientes quando o campo estiver presente; confirmação de efeito, controle de concorrência e releitura | Backhaul EasyMesh protegido; criação/remoção e senha não são oferecidas |
+| Autenticação | Perfis pessoais WPA2/WPA3/transição reconhecidos, com AES e chave existente preservada | Não expõe senhas, não configura Enterprise/RADIUS nem comprova compatibilidade de todos os clientes |
+| Rádio | Leitura por banda e alteração de potência para personalização BREBG2 validada | Canal, largura, país e Band Steering preservados; seleção dinâmica de canal/largura ainda pendente |
+| Histórico | SQLite, até 2.000 eventos/gateway, níveis, busca, filtros, paginação e download; comparação de clientes sem notificações ativas | Configuração/enlace dependem de atualizar inventário. Falha de coleta não gera desconexão em massa |
+| Reinício observado | Suporte a inferência quando uma leitura reconhecida de uptime diminui | Não usa relógio do sistema como uptime nem atribui causa; se a fonte não fornecer uptime reconhecido, não gera o evento |
+| Diagnóstico | Uma tentativa TCP HTTP/HTTPS, até dois segundos, apenas no gateway ou cliente online da LAN | Parte do servidor do app; não é ping/traceroute do Huawei e não comprova isolamento entre clientes |
+| Docker | Copia adaptadores e novos módulos, serve o novo JS e verifica os arquivos no fluxo de publicação | Imagem local não construída neste ambiente sem Docker; o fluxo de CI mantém smoke test em amd64/arm64 |
+
+As operações novas usam objetos e propriedades fixos, confirmação, nova leitura de estado, comparação com a versão editada e releitura de resultado. Não há proxy genérico. Uma operação sem confirmação por releitura retorna erro e não é repetida automaticamente.
+
+Validação local final desta continuação: **83 testes Python e 5 testes de navegação passaram**, além de verificação de sintaxe dos dois arquivos JavaScript e revisão de diferenças sem erros de whitespace. Inclui roteamento HTTP em memória, autenticação/CSRF, rejeição de estado desatualizado, escopo de propriedades, SLAAC, WPS, preservação de segredos, histórico e diagnóstico limitado. A rede do ambiente impediu abrir a prévia local no navegador; não foi feita validação visual das novas telas nem build local de imagem Docker. Não foi feito push ou deploy nesta execução.
+
+## Pendências específicas para conclusão integral
+
+1. Conferir o resultado operacional das escritas com cliente/janela escolhidos pelo usuário. As implementações de escrita foram verificadas com gateways simulados, sem aplicar mudanças no Huawei.
+2. Validar as dependências de mudança conjunta de LAN/DHCP e recuperação no novo endereço antes de liberar gravação do endereço/máscara.
+3. Completar leitura das opções dinâmicas de canal/largura e restrições de Band Steering antes de expor essas alterações. Alteração de senha deve ser implementada sem devolver a chave atual e com confirmação verificável.
+4. Confirmar limites e SSIDs reservados/cobertura antes de criar ou remover SSIDs. Estudar administração LAN e proteção PSK em operações separadas, sem ampliar acesso externo.
+5. Testar bloqueio efetivo, associação/reconexão e tráfego IPv4/IPv6 entre SSIDs/APs com um cliente autorizado. A condição atual Layer 3 impede usar Port Isolation como solução automática; as alternativas permanecem em `RECOMENDACOES-ISOLAMENTO-REDE.md`.
+6. Mapear e validar ping/traceroute estritamente LAN no Huawei caso seja necessário originar testes do equipamento. O diagnóstico TCP do servidor não é substituto para esse aceite.
