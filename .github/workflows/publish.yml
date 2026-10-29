@@ -22,7 +22,7 @@ jobs:
           python-version: '3.12'
       - run: python -m unittest discover -s tests -v
       - run: node --test tests/navigation.test.cjs
-      - run: node --check static/app.js && node --check static/network.js && node --check static/network-actions.js
+      - run: node --check static/app.js && node --check static/network.js && node --check static/network-actions.js && node --check static/navigation-model.js && node --check static/navigation.js
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
@@ -46,6 +46,8 @@ jobs:
           curl --fail --silent http://127.0.0.1:18080/app.js -o /dev/null
           curl --fail --silent http://127.0.0.1:18080/network.js -o /dev/null
           curl --fail --silent http://127.0.0.1:18080/network-actions.js -o /dev/null
+          curl --fail --silent http://127.0.0.1:18080/navigation-model.js -o /dev/null
+          curl --fail --silent http://127.0.0.1:18080/navigation.js -o /dev/null
           docker exec gateway-manager-test python -c "from pathlib import Path; p=Path('/data/smoke'); p.write_text('ok'); p.unlink()"
           test "$(docker inspect -f '{{.State.Running}}' gateway-manager-test)" = true
   publish:

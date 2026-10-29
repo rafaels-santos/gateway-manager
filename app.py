@@ -783,7 +783,7 @@ class Handler(BaseHTTPRequestHandler):
                 if 'gateway' in locals(): record_capability(gateway, 'reservations_ipv4', 'read', capability_failure(e), str(e))
                 self.send_json(400, {'error': str(e)})
             return
-        files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/network.js': ('network.js', 'application/javascript'), '/network-actions.js': ('network-actions.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'), '/icon.png': ('icon.png', 'image/png'), '/huawei.png': ('huawei.png', 'image/png')}
+        files = {'/navigation-model.js': ('navigation-model.js', 'application/javascript'), '/navigation.js': ('navigation.js', 'application/javascript'), '/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/network.js': ('network.js', 'application/javascript'), '/network-actions.js': ('network-actions.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'), '/icon.png': ('icon.png', 'image/png'), '/huawei.png': ('huawei.png', 'image/png')}
         path = urllib.parse.urlsplit(self.path).path
         if path not in files: self.send_error(404); return
         name, mime = files[path]; data = (STATIC / name).read_bytes()

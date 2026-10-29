@@ -16,6 +16,7 @@ function deviceIcon(kind) {
 }
 const pageLabels={devices:'Dispositivos',reservations:'Reservas de IP',dhcp:'DHCP IPv4',dns:'DNS da LAN','static-dns':'Nomes DNS locais',ipv6:'IPv6 e DHCPv6','port-isolation':'Isolamento de portas',wifi:'Redes e SSIDs',firmware:'Firmware',maintenance:'Importar / exportar',reboot:'Reinício',logs:'Logs',capabilities:'Capacidades do gateway',notifications:'Notificações'};
 function updateNavigation(page){
+  if(window.appNavigation){window.appNavigation.update(page);return;}
   document.querySelectorAll('.nav-item').forEach(el=>{const active=el.dataset.page===page&&(page!=='devices'||(el.dataset.networkView||'online')===(deviceView==='blocked'?'blocked':'online'));el.classList.toggle('active',active);if(active)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   $('#breadcrumb').textContent=page==='devices'&&deviceView==='blocked'?'Bloqueios Wi-Fi':pageLabels[page];
 }
@@ -24,6 +25,7 @@ function setPage(page,view='online') {
   document.querySelectorAll('.page').forEach(el=>el.hidden=el.id!==`page-${page}`);
   if(page==='devices')selectDeviceView(view);else updateNavigation(page);
   if(page==='devices') refreshDevices(); else if(page==='reservations') refreshReservations().catch(e=>message(e.message,true)); else if(page==='notifications') refreshWebhook().catch(e=>message(e.message,true)); else if(page==='dhcp'||page==='dns') loadNetworkConfig(page); else if(page==='static-dns') loadStaticDns(); else if(page==='ipv6') loadIpv6(); else if(page==='port-isolation') loadPortIsolation(); else if(page==='wifi') loadWifi(); else if(page==='logs') loadLogs(); else if(page==='maintenance') loadMaintenance(); else if(page==='firmware') loadFirmware(); else if(page==='capabilities') loadCapabilities(); else if(window.networkPageLoaders?.[page]) window.networkPageLoaders[page]();
+  window.appNavigation?.loadRelated(page);
 }
 document.addEventListener('click',event=>{document.querySelectorAll('.filter-menu[open]').forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});});
 document.addEventListener('keydown',event=>{if(event.key==='Escape')document.querySelectorAll('.filter-menu[open]').forEach(menu=>{menu.open=false;menu.querySelector('summary').focus();});});
@@ -301,8 +303,8 @@ for(const page of ['dhcp','dns']){
 }
 async function loadWifi(){
   const area=$('#wifi-configs'), status=$('#wifi-status'); area.replaceChildren(); status.hidden=false; status.textContent='Consultando gateway...';
-  try{const {config}=await api('/api/wifi'); status.hidden=true; config.forEach(n=>{
-    const panel=node('div','panel wifi-panel'), heading=node('h2','',n.network); const form=node('form','wifi-config-form');
+  try{const {config}=await api('/api/wifi'); window.appNavigation?.wifiNetworks(config); status.hidden=true; config.forEach(n=>{
+    const panel=node('div','panel wifi-panel'), heading=node('h2','',n.network); panel.dataset.wifiId=n.id; const form=node('form','wifi-config-form');
     const label=node('label','','Nome da rede'); const input=node('input'); input.value=n.ssid; input.required=true; input.maxLength=32; label.append(input);
     const enabledLabel=node('label','switch-label'), enabled=node('input'); enabled.type='checkbox'; enabled.checked=n.enabled; enabledLabel.append(enabled,document.createTextNode(' Rede ativada'));
     const broadcastLabel=node('label','switch-label'), broadcast=node('input'); broadcast.type='checkbox'; broadcast.checked=n.broadcast; broadcastLabel.append(broadcast,document.createTextNode(' Transmitir nome da rede'));
@@ -310,7 +312,7 @@ async function loadWifi(){
     const details=node('p','footnote',`${n.id.split('.').pop()} · Alterações podem interromper a conexão deste SSID.`); const button=node('button','primary','Revisar e salvar'); button.type='submit';
     form.append(label,enabledLabel,broadcastLabel,maximumLabel,details,button); panel.append(heading,form); area.append(panel);
     if(n.managed_by_mesh){input.disabled=enabled.disabled=broadcast.disabled=maximum.disabled=button.disabled=true;details.textContent='SSID de backhaul gerenciado pelo EasyMesh. Edição isolada indisponível.';}
-    form.addEventListener('submit',async e=>{e.preventDefault();const body={id:n.id,ssid:input.value,enabled:enabled.checked,broadcast:broadcast.checked,expected:{ssid:n.ssid,enabled:n.enabled,broadcast:n.broadcast,max_clients:n.max_clients},confirm:'WIFI'};if(n.max_clients_writable)body.max_clients=maximum.value;if(!confirm(`Aplicar na rede ${n.ssid}?\nNome: ${n.ssid} → ${body.ssid}\nAtivação: ${body.enabled?'Ativada':'Desativada'}\nDivulgação: ${body.broadcast?'Ativada':'Desativada'}\nLimite: ${maximum.value}\nClientes podem precisar se reconectar. Para recuperar o acesso, use cabo ou outro SSID.`))return;button.disabled=true; try{await api('/api/wifi',body);message('Rede Wi-Fi confirmada pelo gateway.'); await loadWifi();}catch(err){message(err.message,true)}finally{button.disabled=false}});
+    form.addEventListener('submit',async e=>{e.preventDefault();const body={id:n.id,ssid:input.value,enabled:enabled.checked,broadcast:broadcast.checked,expected:{ssid:n.ssid,enabled:n.enabled,broadcast:n.broadcast,max_clients:n.max_clients},confirm:'WIFI'};if(n.max_clients_writable)body.max_clients=maximum.value;if(!confirm(`Aplicar na rede ${n.ssid}?\nNome: ${n.ssid} → ${body.ssid}\nAtivação: ${body.enabled?'Ativada':'Desativada'}\nDivulgação: ${body.broadcast?'Ativada':'Desativada'}\nLimite: ${maximum.value}\nClientes podem precisar se reconectar. Para recuperar o acesso, use cabo ou outro SSID.`))return;button.disabled=true; try{await api('/api/wifi',body);message('Rede Wi-Fi confirmada pelo gateway.'); await loadWifi(); await window.appNavigation?.refreshWifiRelated();}catch(err){message(err.message,true)}finally{button.disabled=false}});
   });}catch(e){status.textContent=e.message;}
 }
 $('#refresh-wifi').addEventListener('click',loadWifi);

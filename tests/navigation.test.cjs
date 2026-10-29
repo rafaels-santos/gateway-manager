@@ -4,6 +4,38 @@ const vm=require('node:vm');
 const fs=require('node:fs');
 const path=require('node:path');
 const source=fs.readFileSync(path.join(__dirname,'../static/app.js'),'utf8');
+const model=require('../static/navigation-model.js');
+
+test('all existing pages remain reachable exactly once in the simplified navigation',()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../static/index.html'),'utf8');
+  const extension=fs.readFileSync(path.join(__dirname,'../static/network.js'),'utf8')+fs.readFileSync(path.join(__dirname,'../static/network-actions.js'),'utf8');
+  const existing=[...Array.from(html.matchAll(/<section id="page-([\w-]+)"/g),m=>m[1]),...Array.from(extension.matchAll(/addNetworkPage\('([^']+)'/g),m=>m[1])];
+  const destinations=model.groups.flatMap(group=>group.tabs.flatMap(tab=>tab.pages||[tab.page]));
+  assert.deepEqual([...destinations].sort(),[...existing].sort());
+  assert.equal(new Set(destinations).size,destinations.length);
+  assert.equal(model.groups.length,6);
+  assert.equal(model.locate('wan'),null);
+});
+
+test('DHCP and reservations share one workspace, while radios remain separate from SSIDs',()=>{
+  assert.equal(model.locate('dhcp').tab,model.locate('reservations').tab);
+  assert.equal(model.locate('dns').tab,model.locate('static-dns').tab);
+  assert.equal(model.locate('wifi').tab,model.locate('wifi-security').tab);
+  assert.equal(model.locate('wifi').tab,model.locate('wifi-lifecycle').tab);
+  assert.notEqual(model.locate('wifi').tab,model.locate('wifi-radios').tab);
+  assert.equal(model.locate('notifications').group.id,'notifications');
+  assert.equal(model.groups.at(-1).tabs.at(-1).page,'reboot');
+});
+
+test('Wi-Fi selection uses object identity, supports shared security and recovers after deletion',()=>{
+  const rows=[{id:'ssid.1',ssid:'Casa'},{id:'ssid.5',ssid:'Casa'},{id:'ssid.2',ssid:'Convidados'}];
+  assert.equal(model.wifiSelection(rows,'ssid.5'),'ssid.5');
+  assert.equal(model.wifiSelection(rows.filter(row=>row.id!=='ssid.5'),'ssid.5'),'ssid.1');
+  assert.equal(model.wifiSelection([],'ssid.5'),'');
+  assert.equal(model.matchesNetwork({id:'ssid.1',members:['ssid.1','ssid.5']},'ssid.5'),true);
+  assert.equal(model.matchesNetwork({id:'ssid.1'},'ssid.5'),false);
+  assert.equal(model.matchesNetwork({id:'ssid.1'},''),false);
+});
 
 function element(dataset={}){
   const values=new Set(),attrs={};
@@ -15,7 +47,7 @@ function fixture(){
   const buttons=[element({page:'devices'}),element({page:'devices',networkView:'blocked'}),element({page:'wifi'})];
   const panels=['online','offline','blocked'].map(view=>element({deviceView:view}));
   const controls={...pages,'#breadcrumb':element(),...Object.fromEntries(['online','offline','blocked'].map(key=>['#show-'+key,element()]))};
-  const context=vm.createContext({deviceView:'online',$:selector=>controls[selector],document:{querySelectorAll(selector){if(selector==='.page')return Object.values(pages);if(selector==='.nav-item')return buttons;if(selector==='[data-device-view]')return panels;throw Error(selector);}},refreshDevices(){},refreshReservations(){return Promise.resolve();},refreshWebhook(){return Promise.resolve();},loadNetworkConfig(){},loadWifi(){},loadLogs(){},loadMaintenance(){}});
+  const context=vm.createContext({window:{},deviceView:'online',$:selector=>controls[selector],document:{querySelectorAll(selector){if(selector==='.page')return Object.values(pages);if(selector==='.nav-item')return buttons;if(selector==='[data-device-view]')return panels;throw Error(selector);}},refreshDevices(){},refreshReservations(){return Promise.resolve();},refreshWebhook(){return Promise.resolve();},loadNetworkConfig(){},loadWifi(){},loadLogs(){},loadMaintenance(){}});
   const navigation=source.slice(source.indexOf('const pageLabels='),source.indexOf("document.addEventListener('click'"));
   const select=source.slice(source.indexOf('function selectDeviceView(view)')).split('\n')[0];
   vm.runInContext(navigation+'\n'+select,context);

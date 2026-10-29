@@ -1,5 +1,18 @@
 # Gateway Manager
 
+## Navegação — preparação para 1.0.0
+
+| Área | Abas e funções |
+| --- | --- |
+| Dispositivos | Clientes online/offline/bloqueados; Inventário e topologia |
+| Wi-Fi | Redes: seleção por SSID/banda, ajustes gerais, segurança, senha e gerenciamento; Rádios e cobertura: potência, canal e largura por banda |
+| LAN e IPs | DHCP e reservas juntos; DNS da LAN e nomes locais; IPv6; Endereço LAN; Isolamento de portas |
+| Monitoramento | Logs; Histórico; Diagnóstico |
+| Notificações | Hooks e integrações |
+| Manutenção | Backup; Firmware; Compatibilidade; Reiniciar |
+
+A seleção de rede Wi-Fi usa a identidade do objeto do Huawei: nomes iguais em bandas diferentes não são confundidos. A segurança compartilhada mostra explicitamente o grupo afetado. Criações pendentes permanecem visíveis para recuperação. As abas podem ser percorridas com as setas, Home e End. Esta etapa prepara a versão 1.0.0; os critérios de fechamento estão no [CHANGELOG](CHANGELOG.md).
+
 Aplicativo de gerenciamento de gateway com seleção de modelo na conexão. Atualmente o único adaptador disponível é o Huawei EG8145X6-10 (firmware V5R024C10S106); outros modelos exigem integração própria. A integração de escrita é experimental: os formatos foram inspecionados no firmware e exercitados com gateway simulado, sem modificar o equipamento real. Confirme o resultado no painel do Huawei ao utilizar. Criação, edição e remoção de reservas são confirmadas por releitura antes de a interface reportar sucesso.
 
 A aba Dispositivos lista clientes online de LAN e Wi-Fi e oferece uma aba Offline com os dispositivos que o gateway informa como desconectados, com nome informado pelo Huawei, IP e MAC. A lista é atualizada a cada 15 segundos enquanto a página está visível e também pelo botão Atualizar. Os identificadores são etiquetas persistidas **somente neste aplicativo**, associadas ao MAC; não renomeiam o cliente no gateway nem no dispositivo. A interface do Huawei tem mecanismo próprio de nome por MAC, mas a escrita pelo aplicativo ainda não foi validada. IPs que coincidem com reservas DHCP ativas aparecem em verde como “Fixo”; endereços informados pelo gateway como estáticos sem reserva correspondente aparecem em verde como “Estático”. Essa classificação depende dos dados do Huawei.
@@ -10,11 +23,11 @@ Cada card abre detalhes da conexão e permite salvar um identificador ou criar/e
 
 As abas DHCP e DNS permitem consultar e alterar o intervalo principal, concessão e servidores DNS distribuídos aos clientes. A aba Redes Wi-Fi permite alterar o nome, ativação e transmissão de SSIDs existentes; senhas e configurações de segurança não são editadas. A aba Reinício envia um comando de reinício após confirmação textual, sem restaurar padrões de fábrica. Os comandos foram implementados com base no firmware observado e testados em simulação; ainda não foram executados neste gateway. Alterações podem interromper a rede ou exigir renovação DHCP; confira o painel Huawei caso o aplicativo não confirme uma alteração.
 
-Em **Reservas de IP**, cada reserva pode ser removida com confirmação; o app relê a tabela do Huawei e só informa sucesso quando a entrada desaparece. **LAN e IPs → Nomes DNS locais** permite criar, editar e remover associações da LAN quando o objeto `X_HW_DNS.HOSTS` e a fonte `dnshostslist.asp` são reconhecidos. Cada operação confere se a tabela mudou desde a leitura e verifica o resultado completo; DNS template e Search List são preservados.
+Em **Reservas de IP**, cada reserva pode ser removida com confirmação; o app relê a tabela do Huawei e só informa sucesso quando a entrada desaparece. **LAN e IPs → DNS** permite criar, editar e remover associações da LAN quando o objeto `X_HW_DNS.HOSTS` e a fonte `dnshostslist.asp` são reconhecidos. Cada operação confere se a tabela mudou desde a leitura e verifica o resultado completo; DNS template e Search List são preservados.
 
-**LAN e IPs → IPv6 e DHCPv6** consulta DHCPv6/Router Advertisement e permite gerenciar reservas por MAC/identificador de interface de 64 bits quando o firmware confirma atribuição DHCPv6. Em SLAAC, a edição fica indisponível. A tela também permite configurar somente os servidores DNSv6 estáticos servidos na LAN, com confirmação e releitura. Não modifica prefixos ou delegação.
+**LAN e IPs → IPv6** consulta DHCPv6/Router Advertisement e permite gerenciar reservas por MAC/identificador de interface de 64 bits quando o firmware confirma atribuição DHCPv6. Em SLAAC, a edição fica indisponível. A tela também permite configurar somente os servidores DNSv6 estáticos servidos na LAN, com confirmação e releitura. Não modifica prefixos ou delegação.
 
-Em **Segurança → Isolamento de portas**, a consulta é somente leitura e mostra apenas controles LAN identificados no firmware. A página do Huawei condiciona esse recurso ao modo Layer 2/3; a tela não infere isolamento Wi-Fi nem isolamento completo entre clientes.
+Em **LAN e IPs → Isolamento de portas**, a consulta é somente leitura e mostra apenas controles LAN identificados no firmware. A página do Huawei condiciona esse recurso ao modo Layer 2/3; a tela não infere isolamento Wi-Fi nem isolamento completo entre clientes.
 
 **Rede interna → Inventário e topologia** reúne leituras de endereços LAN, modo das portas, isolamento, EasyMesh, rádios e concessões DHCPv6. Cada painel mostra quando foi consultado; consultas são manuais, por painel ou por inventário completo. Os leitores reconhecem os construtores JavaScript observados no firmware, sem executar JavaScript do gateway. As concessões DHCPv6 observadas usam DUID e aparecem separadas de MACs; estações da topologia não são classificadas como APs.
 
@@ -24,7 +37,7 @@ Em **Segurança → Isolamento de portas**, a consulta é somente leitura e most
 
 **Monitoramento → Diagnóstico interno** executa uma única tentativa TCP HTTP/HTTPS, sob demanda, a partir do servidor do aplicativo, com limite de dois segundos. O destino precisa ser o gateway ou um cliente conectado na LAN atual. Não é o ping/traceroute do Huawei nem prova de isolamento entre clientes.
 
-Os SSIDs permitem ajustar limite de 1 a 64 clientes quando a propriedade observada está presente. O app apresenta as alterações antes de salvar e rejeita edição sobre configuração desatualizada. SSIDs de backhaul identificados como EasyMesh ficam protegidos. **Wi-Fi → Autenticação** permite selecionar perfis pessoais WPA2, WPA3 ou de transição reconhecidos, com AES e preservação da chave atual, sem exibir senhas. WPA3 exige WPS reconhecido como desativado. **Wi-Fi → Rádios e potência** permite ajustar potência no perfil BREBG2 inspecionado, preservando país, modo, largura e seleção de canal. Alteração de senha, canal/largura e políticas de Band Steering ainda não são oferecidas.
+Os SSIDs permitem ajustar limite de 1 a 64 clientes quando a propriedade observada está presente. O app apresenta as alterações antes de salvar e rejeita edição sobre configuração desatualizada. SSIDs de backhaul identificados como EasyMesh ficam protegidos. **Wi-Fi → Redes → Segurança e senha** permite selecionar perfis pessoais WPA2, WPA3 ou de transição reconhecidos, com AES e preservação da chave atual, sem exibir senhas. WPA3 exige WPS reconhecido como desativado. **Wi-Fi → Rádios e potência** permite ajustar potência no perfil BREBG2 inspecionado, preservando país, modo, largura e seleção de canal. Alteração de senha, canal/largura e políticas de Band Steering ainda não são oferecidas.
 
 ## Executar no ZimaOS
 
