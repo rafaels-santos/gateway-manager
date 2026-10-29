@@ -107,5 +107,6 @@ y.Channel y.AutoChannelEnable y.X_HW_HT20 y.X_HW_AutoChannelScope c1.ActionType 
     def test_global_policy_is_an_opaque_local_value_not_a_guessed_boolean(self):
         source='new StXHWGlobalConfig("InternetGatewayDevice.X_HW_WIFIInfo.X_HW_GlobalConfig",2);'
         self.assertEqual(steering_records(source),[{'domain':'InternetGatewayDevice.X_HW_WIFIInfo.X_HW_GlobalConfig','value':'2'}])
+        self.assertEqual(steering_records('new StXHWGlobalConfig("InternetGatewayDevice.X_HW_WIFIInfo","1");'),[{'domain':'InternetGatewayDevice.X_HW_WIFIInfo','value':'1'}])
         for domain, value in [('InternetGatewayDevice.WANDevice.1.Config','1'),('InternetGatewayDevice.X_HW_WIFIInfo.Config','"secret"'),('InternetGatewayDevice.X_HW_WIFIInfo.Config','-1')]:
             self.assertEqual(steering_records('new StXHWGlobalConfig("'+domain+'",'+value+');'),[])

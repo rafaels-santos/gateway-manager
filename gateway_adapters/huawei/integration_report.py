@@ -3,6 +3,7 @@ import hashlib
 import re
 
 from ..errors import GatewayError
+from ..parsers import parse_constructors
 
 SOURCES = {
     '/html/amp/wlanadv/wlanadvance_api.asp': ('AddSubmitParamChannel', 'AddSubmitParam', 'CheckConfigChannel', 'stWlanWifi', 'StXHWGlobalConfig'),
@@ -57,6 +58,8 @@ def integration_report(gateway):
                             'sha256': hashlib.sha256('\n'.join(functions.values()).encode()).hexdigest(), 'functions': functions,
                             'flags': {name: literal_flag(source,name) for name in FLAGS},
                             'band_steering_records': steering_records(source),
+                            'band_steering_schema': [{'domain':str(row[0]),'argument_count':len(row)} for row in parse_constructors(source,'StXHWGlobalConfig')
+                                                     if row and re.fullmatch(r'InternetGatewayDevice\.[A-Za-z0-9_.]{1,160}',str(row[0]))],
                             'flags_note': 'Inicializadores do código, não valores calculados pelo JavaScript em execução.'})
         except GatewayError:
             sources.append({'path': path, 'status': 'unavailable', 'functions': {}})

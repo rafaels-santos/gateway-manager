@@ -43,7 +43,7 @@ def steering_records(source):
         domain, value = str(row[0]), str(row[1])
         # Read-only identity, never used as a CGI target. Firmware families put
         # this typed Wi-Fi object under either local namespace.
-        if not re.fullmatch(r'InternetGatewayDevice\.(?:LANDevice\.1|X_HW_WIFIInfo)\.[A-Za-z0-9_.]+', domain): continue
+        if not re.fullmatch(r'InternetGatewayDevice\.(?:LANDevice\.1|X_HW_WIFIInfo)(?:\.[A-Za-z0-9_.]+)?', domain): continue
         if not re.fullmatch(r'\d{1,10}', value) or int(value) > 4294967295: continue
         result.append({'domain': domain, 'value': str(int(value))})
     return result
