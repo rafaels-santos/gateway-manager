@@ -81,7 +81,7 @@ class RadioControlTests(unittest.TestCase):
 
     def test_exact_native_contract_and_typed_scope_enable_supported_profile(self):
         common='function CheckConfigChannel(selChannel, curChannel) { if ((selChannel == 0) || (selChannel == -1)) { return false; } return (selChannel != curChannel); }'
-        shared='function stWlanWifi(domain,scope){this.X_HW_AutoChannelScope=scope;} new stWlanWifi("'+ROOT+'5","0"); new StXHWGlobalConfig("InternetGatewayDevice.LANDevice.1.WiFi.X_HW_GlobalConfig","1");'
+        shared='function stWlanWifi(domain,scope){this.X_HW_AutoChannelScope=scope;} new stWlanWifi("'+ROOT+'5","0"); var XHWGlobalConfig=new Array(new StXHWGlobalConfig("InternetGatewayDevice.LANDevice.1.WiFi.X_HW_GlobalConfig","1"),null)[0];'
         page="var WdsFlag='0';var fobidChannel=0;var DoubleFreqFlag=1;var dfsChSwitch=1; y.Channel y.AutoChannelEnable y.X_HW_HT20 y.X_HW_AutoChannelScope "+ACTION+' c1.ActionType c2.ActionType c2.SSIDList'
         gateway=SimpleNamespace(request=lambda path,**kwargs: shared if path==SHARED_SOURCE else common)
         radios=RadioGateway().radio_config()
@@ -96,7 +96,7 @@ class RadioControlTests(unittest.TestCase):
         shared='var DoubleFreqFlag=1;function StXHWGlobalConfig(domain,BandSteeringPolicy){this.domain=domain;this.BandSteeringPolicy=BandSteeringPolicy;}'
         page='''var WdsFlag=0;
 function stWlanWifi(domain,scope){this.X_HW_AutoChannelScope=scope;}
-new stWlanWifi("'''+ROOT+'''5","0");new StXHWGlobalConfig("InternetGatewayDevice.LANDevice.1.WiFi.X_HW_GlobalConfig","1");
+new stWlanWifi("'''+ROOT+'''5","0");var XHWGlobalConfig=new Array(new StXHWGlobalConfig("InternetGatewayDevice.LANDevice.1.WiFi.X_HW_GlobalConfig","1"),null)[0];
 y.Channel y.AutoChannelEnable y.X_HW_HT20 y.X_HW_AutoChannelScope c1.ActionType c2.ActionType c2.SSIDList '''+ACTION
         gateway=SimpleNamespace(request=lambda path,**kwargs:shared if path==SHARED_SOURCE else common)
         result=enrich_radios(gateway,page,RadioGateway().radio_config())
@@ -105,8 +105,16 @@ y.Channel y.AutoChannelEnable y.X_HW_HT20 y.X_HW_AutoChannelScope c1.ActionType 
         self.assertEqual(result[1]['band_steering'],'1')
 
     def test_global_policy_is_an_opaque_local_value_not_a_guessed_boolean(self):
-        source='new StXHWGlobalConfig("InternetGatewayDevice.X_HW_WIFIInfo.X_HW_GlobalConfig",2);'
+        source='new Array(new StXHWGlobalConfig("InternetGatewayDevice.X_HW_WIFIInfo.X_HW_GlobalConfig",2),null);'
         self.assertEqual(steering_records(source),[{'domain':'InternetGatewayDevice.X_HW_WIFIInfo.X_HW_GlobalConfig','value':'2'}])
-        self.assertEqual(steering_records('new StXHWGlobalConfig("InternetGatewayDevice.X_HW_WIFIInfo","1");'),[{'domain':'InternetGatewayDevice.X_HW_WIFIInfo','value':'1'}])
+        self.assertEqual(steering_records('new Array(new StXHWGlobalConfig("InternetGatewayDevice.X_HW_WIFIInfo","1"),null);'),[{'domain':'InternetGatewayDevice.X_HW_WIFIInfo','value':'1'}])
         for domain, value in [('InternetGatewayDevice.WANDevice.1.Config','1'),('InternetGatewayDevice.X_HW_WIFIInfo.Config','"secret"'),('InternetGatewayDevice.X_HW_WIFIInfo.Config','-1')]:
-            self.assertEqual(steering_records('new StXHWGlobalConfig("'+domain+'",'+value+');'),[])
+            self.assertEqual(steering_records('new Array(new StXHWGlobalConfig("'+domain+'",'+value+'),null);'),[])
+
+    def test_fallback_constructor_is_not_a_second_live_policy(self):
+        constructor='StXHWGlobalConfig("InternetGatewayDevice.LANDevice.1.WiFi.X_HW_GlobalConfig",'
+        source='var XHWGlobalConfig=new Array(new '+constructor+'"1"),null)[0]; if(XHWGlobalConfig==null){XHWGlobalConfig=new '+constructor+'"0");}'
+        self.assertEqual([row['value'] for row in steering_records(source)],['1'])
+        self.assertEqual([row['value'] for row in steering_records(source,authoritative=False)],['1','0'])
+        conflict='new Array(new '+constructor+'"1"),new '+constructor+'"0"),null);'
+        self.assertEqual([row['value'] for row in steering_records(conflict)],['1','0'])

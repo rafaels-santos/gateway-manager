@@ -9,6 +9,7 @@ from ..errors import GatewayError
 
 def log_links(source, base='/index.asp'):
     source=html.unescape(re.sub(r'\\(?:x|u00)([0-9a-fA-F]{2})',lambda match:chr(int(match[1],16)),source))
+    source=source.replace(r'\"','"').replace(r"\'","'").replace(r'\/','/')
     result={}
     for match in re.finditer(r'''["']([^"'\s<>]*(?:html/ssmp/|\.\./)[^"'\s<>]*log[^"'\s<>]*\.asp)["']''',source,re.I):
         href=match[1]; original=urllib.parse.urlsplit(href)

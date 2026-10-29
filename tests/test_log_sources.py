@@ -5,13 +5,20 @@ from gateway_adapters.errors import GatewayError
 
 
 class LogSourceTests(unittest.TestCase):
-    def test_missing_user_log_folder_uses_fixed_alternate_get(self):
+    def test_missing_user_log_does_not_guess_alternate_folder(self):
         gateway=Gateway('192.168.100.254')
-        page="document.getElementById('logarea').value = 'SWVer:V5R024C10S106;HWVer:343D.D;';"
-        with patch.object(gateway,'request',side_effect=[GatewayError('Gateway recusou consulta (HTTP 404).'),'',page]) as request:
-            self.assertIn('SWVer:',gateway.logs()['raw'])
-            self.assertEqual(request.call_args_list[-1].args,('/html/ssmp/logview/logview.asp',))
-            self.assertTrue(all(len(call.args)==1 for call in request.call_args_list))
+        with patch.object(gateway,'request',side_effect=[GatewayError('Gateway recusou consulta (HTTP 404).'),'']) as request:
+            with self.assertRaisesRegex(GatewayError,'Epadmin'):gateway.logs()
+            self.assertEqual(request.call_count,2)
+            self.assertEqual(request.call_args_list[0].kwargs,{'referer':'/index.asp','max_redirects':0})
+            self.assertEqual(request.call_args_list[-1].args,('/index.asp',))
+
+    def test_confirmed_native_user_log_uri_is_read_without_other_requests(self):
+        gateway=Gateway('192.168.100.254')
+        page='document.getElementById("logarea").value = OldLogText;\n'+"document.getElementById('logarea').value = '2026-10-29 12:00:00 [Warning][Alarm-Log] Test';"
+        with patch.object(gateway,'request',return_value=page) as request:
+            self.assertEqual(gateway.logs()['events'][0]['level'],'WAR')
+            request.assert_called_once_with('/html/ssmp/userlog/logview.asp',referer='/index.asp',max_redirects=0)
 
     def test_permission_denial_does_not_try_another_folder(self):
         gateway=Gateway('192.168.100.254')
@@ -32,6 +39,7 @@ class LogSourceTests(unittest.TestCase):
         from gateway_adapters.huawei.log_discovery import log_links
         self.assertEqual(log_links('<a href="html/ssmp/userlog/userlogview.asp">User Log</a>'),{'user':'/html/ssmp/userlog/userlogview.asp'})
         self.assertEqual(log_links(r'"html\x2fssmp\x2fuserlog\x2fuserlogview.asp"'),{'user':'/html/ssmp/userlog/userlogview.asp'})
+        self.assertEqual(log_links(r'var xml="<menu url=\"html/ssmp/userlog/userlogview.asp\"/>";'),{'user':'/html/ssmp/userlog/userlogview.asp'})
         for href in ('https://other.example/html/ssmp/userlog/log.asp','//other.example/html/ssmp/userlog/log.asp','html/ssmp/userlog/deletelog.asp','html/ssmp/userlog/log.asp?apply=1','html/ssmp/debug/log.asp'):
             self.assertEqual(log_links('<a href="'+href+'">Log</a>'),{})
 

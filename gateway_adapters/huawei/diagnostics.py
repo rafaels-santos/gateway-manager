@@ -20,7 +20,7 @@ class HuaweiDiagnostics:
         paths.update(getattr(self,'discovered_log_paths',{}))
         # Read the same page as Maintenance > User Log; never change logging settings.
         try:
-            page = self.request(paths[source])
+            page = self.request(paths[source], referer='/index.asp', max_redirects=0)
         except GatewayError as error:
             # Firmware families expose User Log under different fixed folders.
             # Never use a fallback to circumvent a permission/session denial.
@@ -28,7 +28,8 @@ class HuaweiDiagnostics:
             from .log_discovery import discover_log_paths
             discovered=discover_log_paths(self)
             self.discovered_log_paths=discovered
-            alternate=discovered.get('user','/html/ssmp/logview/logview.asp')
-            if alternate==paths[source]: raise
-            page = self.request(alternate)
+            alternate=discovered.get('user')
+            if not alternate or alternate==paths[source]:
+                raise GatewayError('User Log indisponível nesta sessão (HTTP 404). Confirme o acesso com Epadmin; o firmware pode ocultar a página para outros perfis.') from error
+            page = self.request(alternate, referer='/index.asp', max_redirects=0)
         return parse_logs_page(page, source)

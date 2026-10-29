@@ -2,6 +2,25 @@
 
 Inspeção em 28/10/2026 · Huawei EG8145X6-10 · HW 343D.D · SW V5R024C10S106.
 
+## Estado consolidado — 29/10/2026
+
+As seções de continuação abaixo registram a evolução; suas pendências históricas não substituem este estado atual.
+
+| Área | Implementação atual | Aceite e limitações |
+| --- | --- | --- |
+| Clientes e inventário | Online/offline/bloqueados, identidade por MAC, categorias, filtros, portas, topologia, concessões IPv6 e exportação sem segredos | As leituras dependem do perfil e dos formatos reconhecidos; DUID não é convertido em MAC |
+| LAN e nomes | DHCP/DNS IPv4, reservas IPv4/IPv6, DNS local e DNSv6; migração conjunta LAN/DHCP com prévia e recuperação persistente | Reservas IPv6 exigem DHCPv6 gerenciado; SLAAC não é alterado automaticamente. Migração real ainda requer janela de teste |
+| Wi-Fi | SSIDs, autenticação e senha agrupada, potência, canal/largura, criação desativada com recuperação e remoção em duas etapas | Protege redes principais/backhaul e dependências. Canal/largura exige contrato e perfil reconhecidos; não muda país nem Band Steering |
+| Segurança | Política MAC com confirmação do conjunto afetado, desbloqueio, leitura de isolamento e modos das portas | Não promete isolamento completo. Portas observadas em Layer 3 impedem usar Port Isolation; não há conversão automática |
+| Monitoramento | User/AP Logs, filtros, download, histórico local, diagnóstico TCP LAN limitado e notificações | Diagnóstico parte do servidor do app. Ping/traceroute nativos, ajustes de roaming, proteção PSK e ACL administrativa continuam expansões a investigar, sem comandos presumidos |
+| Operação | Arquivo portátil de identificadores/reservas, firmware somente consulta/download, reinício explícito, Docker multiarch | Não exporta backup bruto da ONT, credenciais ou configurações WAN |
+
+Na revisão autenticada com **Epadmin**, o app leu **599 User Logs e 500 AP Logs**, além das fontes de segurança Wi-Fi, ciclo de vida de SSIDs, DNS local, reservas IPv6, DNSv6 e isolamento. O endereço nativo confirmado de User Log é `/html/ssmp/userlog/logview.asp`; HTTP 404 pode representar indisponibilidade para o perfil. Não se tenta mais um diretório alternativo por adivinhação: apenas links observados no menu podem fornecer outro caminho.
+
+O parser de rádio distingue o registro ativo de `StXHWGlobalConfig` no array nativo do objeto padrão construído no ramo de fallback. Valores realmente conflitantes continuam bloqueando a gravação. A correção não escolhe um valor desejado nem modifica a política do equipamento.
+
+**Validação desta revisão: 135 testes Python e 5 de navegação passaram**, além da sintaxe dos três JavaScripts. Escritas foram exercitadas exclusivamente com gateways simulados. Nenhuma configuração do Huawei foi aplicada durante o desenvolvimento. Aceites reais de associação/bloqueio, tráfego IPv4/IPv6 entre clientes, resolução DNS e migração LAN permanecem separados da conclusão do código, pois dependem de cliente e janela autorizados.
+
 ## Objetivo e limites
 
 Usar o Gateway Manager como painel da rede interna: clientes, Wi-Fi, endereçamento, nomes locais, controle de acesso e diagnóstico. A navegação foi reorganizada; a implementação inicial da Fase 1 está registrada abaixo.

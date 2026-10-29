@@ -36,7 +36,13 @@ def canonical_scope(value):
     return ','.join(str(n) for n in sorted(set(map(int, value.split(',')))))
 
 
-def steering_records(source):
+def steering_records(source, *, authoritative=True):
+    if authoritative:
+        # Firmware emits the actual values in typed arrays, then constructs a
+        # zero-valued object as a fallback in an if-null branch. That fallback
+        # is source code, not a second active configuration record.
+        arrays=re.findall(r'\bnew\s+Array\s*\(\s*((?:new\s+StXHWGlobalConfig\s*\([^)]*\)\s*,?\s*)+)(?:null\s*)?\)',source)
+        source='\n'.join(arrays)
     result = []
     for row in parse_constructors(source, 'StXHWGlobalConfig'):
         if len(row) != 2: continue
