@@ -53,13 +53,16 @@ def enrich_radios(gateway, page, radios):
     contract = re.sub(r'\s+', '', check) == CHECK_CONTRACT
     contract = contract and all(marker in page for marker in ('y.Channel', 'y.AutoChannelEnable', 'y.X_HW_HT20',
                             'y.X_HW_AutoChannelScope', ACTION, 'c1.ActionType', 'c2.ActionType', 'c2.SSIDList'))
-    contract = contract and flags == {'WdsFlag': 0, 'fobidChannel': 0, 'DoubleFreqFlag': 1, 'dfsChSwitch': 1}
-    index = scope_index(shared)
-    scopes = {str(row[0]): str(row[index]) for row in parse_constructors(shared+'\n'+page, 'stWlanWifi')
+    # dfsChSwitch starts at 0 in the common script and is computed by the UI.
+    # It is not a persisted capability bit. DFS options come from the exact
+    # BR/11ax/firmware matrix observed in the native UI, not this initializer.
+    contract = contract and flags['WdsFlag'] == 0 and flags['fobidChannel'] == 0 and flags['DoubleFreqFlag'] == 1 and flags['dfsChSwitch'] in (0, 1)
+    index = scope_index(all_source)
+    scopes = {str(row[0]): str(row[index]) for row in parse_constructors(all_source, 'stWlanWifi')
               if index is not None and len(row) > index}
-    steering = [row[1] for row in parse_constructors(shared, 'StXHWGlobalConfig') if len(row) == 2
+    steering = [row[1] for row in parse_constructors(all_source, 'StXHWGlobalConfig') if len(row) == 2
                 and row[0] == 'InternetGatewayDevice.LANDevice.1.WiFi.X_HW_GlobalConfig' and row[1] in ('0', '1')]
-    steering = steering[0] if len(steering) == 1 else None
+    steering = steering[0] if steering and len(set(steering)) == 1 else None
     for radio in radios:
         scope = canonical_scope(scopes.get(radio['id']))
         five = radio['id'].endswith('.5')

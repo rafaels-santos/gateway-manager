@@ -90,3 +90,16 @@ class RadioControlTests(unittest.TestCase):
         self.assertEqual(result[1]['channel_selection'],'-1')
         result=enrich_radios(gateway,page.replace('var WdsFlag=\'0\'','var WdsFlag=\'1\''),RadioGateway().radio_config())
         self.assertFalse(any(row['channel_write_available'] for row in result))
+
+    def test_constructor_and_global_instances_can_live_in_api_with_dfs_initializer_zero(self):
+        common='function CheckConfigChannel(selChannel, curChannel) { if ((selChannel == 0) || (selChannel == -1)) { return false; } return (selChannel != curChannel); } var dfsChSwitch=0;var fobidChannel=0;'
+        shared='var DoubleFreqFlag=1;function StXHWGlobalConfig(domain,BandSteeringPolicy){this.domain=domain;this.BandSteeringPolicy=BandSteeringPolicy;}'
+        page='''var WdsFlag=0;
+function stWlanWifi(domain,scope){this.X_HW_AutoChannelScope=scope;}
+new stWlanWifi("'''+ROOT+'''5","0");new StXHWGlobalConfig("InternetGatewayDevice.LANDevice.1.WiFi.X_HW_GlobalConfig","1");
+y.Channel y.AutoChannelEnable y.X_HW_HT20 y.X_HW_AutoChannelScope c1.ActionType c2.ActionType c2.SSIDList '''+ACTION
+        gateway=SimpleNamespace(request=lambda path,**kwargs:shared if path==SHARED_SOURCE else common)
+        result=enrich_radios(gateway,page,RadioGateway().radio_config())
+        self.assertTrue(all(row['channel_write_available'] for row in result))
+        self.assertEqual(result[1]['auto_scope'],'0')
+        self.assertEqual(result[1]['band_steering'],'1')

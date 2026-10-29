@@ -48,6 +48,8 @@ A exportação autenticada retornou as funções nativas sem arrays de estado. `
 
 Os campos permitidos nesta operação são y.Channel, y.AutoChannelEnable, y.X_HW_HT20 e, em automático 5 GHz, y.X_HW_AutoChannelScope. País, padrão, potência, Band Steering, configuração de SSIDs e a outra banda são relidos para preservação. Automático com DFS usa Channel=0, AutoChannelEnable=1 e escopo `0`; sem DFS usa apenas os canais permitidos sem DFS da largura observada.
 
-A gravação exige leitura reconhecida do escopo, Band Steering, WdsFlag=0, fobidChannel=0, DoubleFreqFlag=1, dfsChSwitch=1 e a função CheckConfigChannel conferida, além do perfil exato. Falta de evidência mantém somente a prévia.
+A gravação exige leitura reconhecida do escopo, Band Steering, WdsFlag=0, fobidChannel=0, DoubleFreqFlag=1 e a função CheckConfigChannel conferida, além do perfil exato. O código comum inicializa dfsChSwitch em 0 antes do cálculo na interface; esse inicializador não representa uma desativação persistida de DFS. As opções DFS são limitadas à matriz BR/11ax/hardware/firmware observada no formulário nativo. Falta de evidência mantém somente a prévia.
+
+A conferência ao vivo também mostrou que a definição dos construtores e suas instâncias podem estar em arquivos diferentes. A leitura combina os três scripts conhecidos, mantendo a validação dos domínios e recusando dados conflitantes. O diagnóstico identifica os flags como inicializadores, sem apresentá-los como valores calculados pelo JavaScript em execução.
 
 Na sessão real, `/html/ssmp/userlog/logview.asp` devolveu HTTP 404. O leitor passa a tentar a pasta fixa alternativa `/html/ssmp/logview/logview.asp` somente nessa condição, nunca após 403/negação de sessão. Device Information serve como fonte alternativa de versão por nomes explícitos dos campos, sem retornar serial. Esses caminhos devem ser reconferidos após troca de firmware/perfil.
