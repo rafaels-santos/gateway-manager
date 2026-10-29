@@ -163,11 +163,13 @@ class ComposeGeneratorTests(unittest.TestCase):
                 compose.render(self.template,project='example',port=8080,address=address)
 
     @unittest.skipUnless(shutil.which('docker'),'Docker Compose is not installed')
-    def test_docker_compose_resolves_generated_file_without_changing_literal_password(self):
+    def test_docker_compose_preserves_escaped_password_until_container_creation(self):
         if subprocess.run(['docker','compose','version'],capture_output=True).returncode: self.skipTest('Compose unavailable')
         secret='test-only$UNDEFINED_DOLLAR:\"value'
         rendered=compose.render(self.template,project='compose-test',port=8088,password=secret)
         with tempfile.TemporaryDirectory(dir=compose.ROOT) as folder:
             target=Path(folder)/'compose.local.yml'; compose.write_private(target,rendered)
             parsed=json.loads(subprocess.check_output(['docker','compose','-f',str(target),'config','--format','json'],stderr=subprocess.DEVNULL))
-        self.assertEqual(parsed['services']['gateway-manager']['environment']['GATEWAY_PASSWORD'],secret)
+        # config retains $$ for the later container-creation interpolation.
+        # The workflow additionally checks the final value inside a container.
+        self.assertEqual(parsed['services']['gateway-manager']['environment']['GATEWAY_PASSWORD'],secret.replace('$','$$'))

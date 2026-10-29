@@ -55,8 +55,21 @@ jobs:
           curl --fail --silent http://127.0.0.1:18080/network-actions.js -o /dev/null
           curl --fail --silent http://127.0.0.1:18080/navigation-model.js -o /dev/null
           curl --fail --silent http://127.0.0.1:18080/navigation.js -o /dev/null
+          curl --fail --silent http://127.0.0.1:18080/api/connection-defaults | python -c 'import json,sys; value=json.load(sys.stdin); assert value["address"]=="" and not value["default_credentials_available"]'
           docker exec gateway-manager-test python -c "from pathlib import Path; p=Path('/data/smoke'); p.write_text('ok'); p.unlink()"
           test "$(docker inspect -f '{{.State.Running}}' gateway-manager-test)" = true
+      - name: Verify generated Compose credentials inside container
+        shell: bash
+        run: |
+          set -eu
+          python - <<'PY'
+          from tools.generate_compose import ROOT, render, write_private
+          template=(ROOT/'docker-compose.yml').read_text(encoding='utf-8').replace('ghcr.io/rafaels-santos/gateway-manager:latest','gateway-manager:smoke')
+          value=render(template,project='compose-credentials-test',port=8088,volume='gateway-manager-credentials-test',password='test-only$UNDEFINED_DOLLAR:"value')
+          write_private(ROOT/'compose.credentials.local.yml',value)
+          PY
+          trap 'docker compose -f compose.credentials.local.yml down -v' EXIT
+          docker compose -f compose.credentials.local.yml run --rm --no-deps --pull never --entrypoint python gateway-manager -c 'import os; assert os.environ["GATEWAY_PASSWORD"] == "test-only$UNDEFINED_DOLLAR:\"value"'
   publish:
     needs: test
     runs-on: ubuntu-latest
