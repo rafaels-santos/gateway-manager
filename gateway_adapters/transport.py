@@ -50,6 +50,7 @@ class GatewayTransport:
         self.dhcpv6_clients = []
         self.lan_port_statuses = {}
         self.network_pages = {}
+        self.pending_lan_change = None
     def request(self, path, data=None, *, referer='/', xhr=False, timeout=12, max_redirects=3):
         payload = None if data is None else urllib.parse.urlencode(data).encode('utf-8')
         headers = {'User-Agent': 'Mozilla/5.0', 'Referer': self.base + referer, 'Accept': 'text/html,*/*'}

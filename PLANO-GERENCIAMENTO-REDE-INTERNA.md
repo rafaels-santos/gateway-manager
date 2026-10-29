@@ -168,8 +168,29 @@ Validação local final desta continuação: **83 testes Python e 5 testes de na
 ## Pendências específicas para conclusão integral
 
 1. Conferir o resultado operacional das escritas com cliente/janela escolhidos pelo usuário. As implementações de escrita foram verificadas com gateways simulados, sem aplicar mudanças no Huawei.
-2. Validar as dependências de mudança conjunta de LAN/DHCP e recuperação no novo endereço antes de liberar gravação do endereço/máscara.
-3. Completar leitura das opções dinâmicas de canal/largura e restrições de Band Steering antes de expor essas alterações. Alteração de senha deve ser implementada sem devolver a chave atual e com confirmação verificável.
+2. Validar operacionalmente, em janela autorizada, a mudança conjunta de LAN/DHCP e recuperação implementadas na etapa abaixo.
+3. Implementar as opções dinâmicas de canal/largura e restrições de Band Steering conforme a próxima etapa reservada. A alteração de senha foi implementada na etapa abaixo.
 4. Confirmar limites e SSIDs reservados/cobertura antes de criar ou remover SSIDs. Estudar administração LAN e proteção PSK em operações separadas, sem ampliar acesso externo.
 5. Testar bloqueio efetivo, associação/reconexão e tráfego IPv4/IPv6 entre SSIDs/APs com um cliente autorizado. A condição atual Layer 3 impede usar Port Isolation como solução automática; as alternativas permanecem em `RECOMENDACOES-ISOLAMENTO-REDE.md`.
 6. Mapear e validar ping/traceroute estritamente LAN no Huawei caso seja necessário originar testes do equipamento. O diagnóstico TCP do servidor não é substituto para esse aceite.
+
+## Etapa atual finalizada — LAN e senha Wi-Fi
+
+- LAN: prévia conjunta de endereço, máscara, intervalo DHCP e reservas; migração opcional preservando o número de host. Valida sobreposição, conflitos, reservas e pools especiais antes do envio.
+- Aplicação exige confirmação explícita e o novo IP digitado. O comando é enviado uma única vez. Um diário persistente sem credenciais permite retomar a verificação após reiniciar o aplicativo.
+- Recuperação: reconecta no endereço proposto, compara o MAC LAN do equipamento e relê endereço, DHCP e reservas. Migra cadastros locais somente após confirmação; uma resposta interrompida permanece pendente, sem repetição automática.
+- Senha Wi-Fi: formulário sem revelar a chave atual; valida os requisitos do firmware, detecta alterações concorrentes e agrupa SSIDs de mesmo nome nas bandas. Confirma a chave por releitura em todos os membros; backhaul e chaves mascaradas ficam indisponíveis.
+- A chave não é incluída nas respostas, no diário nem nos eventos. A troca exige confirmação sobre a reconexão dos clientes.
+- Verificação local: **99 testes Python e 5 testes de navegação passaram**, além da sintaxe dos três JavaScripts e verificação de diferenças. As escritas foram testadas com gateways simulados; nenhuma configuração do Huawei foi aplicada.
+
+## Próxima etapa reservada — rádios e ciclo de vida de SSIDs
+
+Não iniciada nesta entrega. O levantamento abaixo foi feito no painel, restaurando os valores dos formulários sem clicar em Aplicar.
+
+1. Expor canal/largura para `EG8145X6-10`, hardware `343D.D`, firmware `V5R024C10S106`, personalização `BREBG2`, país `BR` e modo `11ax`. Outros perfis exigem nova detecção; não reutilizar uma lista regulatória por suposição.
+2. 2,4 GHz: larguras `0` (auto 20/40), `1` (20) e `2` (40); canais `0` (automático) e 1–13 nas três larguras observadas.
+3. 5 GHz: larguras `0` (auto 20/40), `1` (20), `2` (40), `3` (auto 20/40/80), `4` (auto 20/40/80/160). Canais observados: 36, 40, 44, 48, 52, 56, 60, 64, 100–144 em passos de quatro e 149, 153, 157, 161; canal 165 disponível apenas em 20 MHz. Automáticos distintos: `-1` com DFS e `0` sem DFS.
+4. Mapear o escopo automático e os comandos auxiliares de rádio antes de escrever. Preservar país, modo, potência não editada e dependências de Band Steering; a presença das opções na tela não comprova sozinha o contrato de gravação.
+5. Criação: o fluxo nativo usa **`addcfg.cgi`**, objeto `y=InternetGatewayDevice.LANDevice.1.WLANConfiguration`, `y.LowerLayers` e campos do SSID. A criação e a configuração de chave são etapas distintas no painel. Planejar criação desativada, segurança verificável antes da ativação e recuperação de falhas parciais.
+6. Conferir limites por banda, índices reservados, cobertura/EasyMesh e a rotina nativa de exclusão, ainda não capturada. Não liberar remoção nem inferir o comando de exclusão antes disso.
+7. Acrescentar testes de combinações, concorrência, preservação dos campos e falhas parciais; deixar o aceite com clientes reais para janela autorizada.

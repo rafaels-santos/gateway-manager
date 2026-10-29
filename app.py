@@ -524,11 +524,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.send_header('Cache-Control', 'no-store')
         if cookie is not None: self.send_header('Set-Cookie', 'session=' + cookie + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + ('604800' if cookie else '0'))
         self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
-    def session(self):
+    def session(self, *, allow_pending=False):
         from http.cookies import SimpleCookie
         c = SimpleCookie(); c.load(self.headers.get('Cookie', ''))
         with LOCK: s = SESSIONS.get(c['session'].value if 'session' in c else '')
         if not s: raise GatewayError('Conecte-se ao gateway novamente.')
+        if getattr(s,'pending_lan_change',None) and not allow_pending:
+            raise GatewayError('Há uma mudança LAN aguardando verificação. Abra Endereço LAN e use Verificar novo endereço, sem reenviar o comando.')
         return s
     def do_GET(self):
         if self.path == '/api/gateway-types':
@@ -536,10 +538,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == '/api/session':
             try:
-                gw = self.session()
-                with gw.lock: gw.devices()
-                self.send_json(200, {'connected': True, 'model': gw.model_id, 'model_label': gw.model_label, **getattr(gw,'identity',{})})
+                gw = self.session(allow_pending=True)
+                pending = getattr(gw,'pending_lan_change',None)
+                with gw.lock:
+                    if not pending: gw.devices()
+                self.send_json(200, {'connected': True, 'model': gw.model_id, 'model_label': gw.model_label, 'pending_lan':bool(pending), **getattr(gw,'identity',{})})
             except GatewayError as e: self.send_json(401, {'error': str(e)})
+            return
+        if self.path == '/api/network/lan-state':
+            try:
+                gw = self.session(allow_pending=True)
+                pending = getattr(gw,'pending_lan_change',None)
+                self.send_json(200, {'pending':bool(pending),'proposed':pending['plan']['proposed'] if pending else None,'recovery':pending['plan']['recovery'] if pending else []})
+            except GatewayError as error: self.send_json(400,{'error':str(error)})
             return
         if self.path == '/api/capabilities':
             try:
@@ -738,7 +749,7 @@ class Handler(BaseHTTPRequestHandler):
                 if 'gateway' in locals(): record_capability(gateway, 'reservations_ipv4', 'read', capability_failure(e), str(e))
                 self.send_json(400, {'error': str(e)})
             return
-        files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/network.js': ('network.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'), '/icon.png': ('icon.png', 'image/png'), '/huawei.png': ('huawei.png', 'image/png')}
+        files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/network.js': ('network.js', 'application/javascript'), '/network-actions.js': ('network-actions.js', 'application/javascript'), '/style.css': ('style.css', 'text/css'), '/icon.png': ('icon.png', 'image/png'), '/huawei.png': ('huawei.png', 'image/png')}
         path = urllib.parse.urlsplit(self.path).path
         if path not in files: self.send_error(404); return
         name, mime = files[path]; data = (STATIC / name).read_bytes()
@@ -777,8 +788,41 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/api/network/lan-preview':
                 gw = self.session()
                 with gw.lock:
-                    result = network_management.preview_lan(gw.dhcp_config(), gw.reservations()[0], gw.devices(), body)
+                    result = gw.plan_lan_change(body)
+                    with labels() as db: network_management.assert_gateway_target_free(db,gw.base,result['proposed']['base'])
                 self.send_json(200, result)
+            elif self.path in ('/api/network/lan-apply','/api/network/lan-verify'):
+                gw = self.session(allow_pending=self.path.endswith('verify'))
+                serial = MONITOR_LOCKS.setdefault(gw.base,threading.Lock())
+                with serial:
+                    stop_monitor(gw)
+                    with gw.lock:
+                        source = (getattr(gw,'pending_lan_change',None) or {}).get('storage_source',gw.base)
+                        def journal(plan):
+                            try:
+                                with labels() as db: network_management.journal_lan_change(db,source,plan)
+                            except sqlite3.Error:
+                                raise GatewayError('Não foi possível registrar a recuperação local. O comando de mudança LAN não foi enviado.')
+                        try:
+                            result = gw.verify_lan_change() if self.path.endswith('verify') else gw.apply_lan_change(body,journal=journal)
+                            replacement = result.pop('replacement',None)
+                            if replacement is not None:
+                                try:
+                                    with labels() as db:
+                                        network_management.move_gateway_state(db,source,replacement.base)
+                                        network_management.event(db,replacement.base,'configuration_changed','Novo endereço LAN, DHCP e reservas confirmados no mesmo equipamento. Cadastros locais preservados.',evidence='confirmed')
+                                except (GatewayError,sqlite3.Error) as error:
+                                    result = {**result,'state':'pending_verification','verified':False,'message':'O gateway respondeu no novo endereço, mas a migração dos cadastros não concluiu. Resolva o conflito e use Verificar novamente.'}
+                                else:
+                                    for attribute in ('base','cookies','opener','credentials','capability_matrix','dhcpv6_clients','lan_port_statuses','network_pages'):
+                                        setattr(gw,attribute,getattr(replacement,attribute))
+                                    gw.pending_lan_change = None
+                                    record_capability(gw,'lan_address','write','verified')
+                            if not getattr(gw,'pending_lan_change',None): start_monitor(gw)
+                        except Exception:
+                            if not getattr(gw,'pending_lan_change',None): start_monitor(gw)
+                            raise
+                self.send_json(200,result)
             elif self.path in ('/api/local-records', '/api/dnsv6'):
                 gw = self.session()
                 feature = 'static_dns' if body.get('kind') == 'dns' else 'ipv6_reservations' if self.path == '/api/local-records' else 'dns_ipv6'
@@ -799,6 +843,11 @@ class Handler(BaseHTTPRequestHandler):
                 record_capability(gw, feature, 'write', 'verified')
                 with labels() as db: network_management.event(db, gw.base, 'configuration_changed', 'Alteração de autenticação Wi-Fi ou potência confirmada por releitura.', evidence='confirmed')
                 self.send_json(200, {'config': result})
+            elif self.path == '/api/wifi/password':
+                gw = self.session()
+                result = gw.save_wifi_password(body)
+                with labels() as db: network_management.event(db,gw.base,'configuration_changed','Alteração de senha Wi-Fi confirmada por releitura. A chave não foi registrada.',evidence='confirmed')
+                self.send_json(200,result)
             elif self.path == '/api/network/diagnostic':
                 gw = self.session()
                 with gw.lock:
@@ -831,8 +880,9 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute('INSERT INTO app_origins (gateway,origin) VALUES (?,?) ON CONFLICT(gateway) DO UPDATE SET origin=excluded.origin', (gw.base, origin))
                 key = secrets.token_urlsafe(32)
                 with LOCK: SESSIONS[key] = gw
-                start_monitor(gw)
-                self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label, **identity}, key)
+                with labels() as db: gw.pending_lan_change = network_management.restore_lan_journal(db,gw.base)
+                if not gw.pending_lan_change: start_monitor(gw)
+                self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label, 'pending_lan':bool(gw.pending_lan_change), **identity}, key)
             elif self.path == '/api/block':
                 gw = self.session()
                 try: gw.block_client(body)

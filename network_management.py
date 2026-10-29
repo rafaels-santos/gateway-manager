@@ -5,6 +5,7 @@ This module never sends configuration commands to a gateway.
 import datetime
 import ipaddress
 import json
+import re
 import socket
 
 from gateway_adapters.errors import GatewayError
@@ -18,6 +19,41 @@ def schema(db):
     db.execute('CREATE TABLE IF NOT EXISTS network_observations (gateway TEXT, category TEXT, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(gateway,category))')
     db.execute('CREATE TABLE IF NOT EXISTS network_events (id INTEGER PRIMARY KEY AUTOINCREMENT, gateway TEXT NOT NULL, occurred_at TEXT NOT NULL, level TEXT NOT NULL, kind TEXT NOT NULL, message TEXT NOT NULL, evidence TEXT NOT NULL, mac TEXT NOT NULL DEFAULT \'\')')
     db.execute('CREATE INDEX IF NOT EXISTS network_events_gateway ON network_events(gateway,id)')
+    db.execute('CREATE TABLE IF NOT EXISTS lan_change_journal (gateway TEXT PRIMARY KEY, target TEXT NOT NULL, plan TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL)')
+
+
+def gateway_tables(db):
+    for (name,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name): continue
+        if any(column[1] == 'gateway' for column in db.execute('PRAGMA table_info("'+name+'")')):
+            yield name
+
+
+def assert_gateway_target_free(db, source, target):
+    if source == target: return
+    for name in gateway_tables(db):
+        if name == 'lan_change_journal': continue
+        if db.execute('SELECT 1 FROM "'+name+'" WHERE gateway=? LIMIT 1',(target,)).fetchone():
+            raise GatewayError('Já existem dados de outro perfil no novo endereço. Exporte os perfis e resolva esse conflito antes da mudança LAN.')
+
+
+def journal_lan_change(db, source, plan):
+    assert_gateway_target_free(db, source, plan['proposed']['base'])
+    db.execute('INSERT INTO lan_change_journal VALUES (?,?,?,?,?) ON CONFLICT(gateway) DO UPDATE SET target=excluded.target,plan=excluded.plan,status=excluded.status,updated_at=excluded.updated_at',
+               (source,plan['proposed']['base'],json.dumps(plan,sort_keys=True),'attempted',utc_now()))
+
+
+def restore_lan_journal(db, gateway):
+    row = db.execute("SELECT gateway,plan FROM lan_change_journal WHERE (gateway=? OR target=?) AND status='attempted' ORDER BY updated_at DESC LIMIT 1",(gateway,gateway)).fetchone()
+    return {'plan':json.loads(row[1]),'storage_source':row[0],'attempted':True} if row else None
+
+
+def move_gateway_state(db, source, target):
+    assert_gateway_target_free(db,source,target)
+    if source != target:
+        for name in list(gateway_tables(db)):
+            db.execute('UPDATE "'+name+'" SET gateway=? WHERE gateway=?',(target,source))
+    db.execute("UPDATE lan_change_journal SET status='verified',updated_at=? WHERE gateway=?",(utc_now(),target))
 
 
 def event(db, gateway, kind, message, *, level='INFO', evidence='observed', mac=''):

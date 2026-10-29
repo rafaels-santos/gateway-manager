@@ -34,6 +34,10 @@ class LocalGateway(Gateway):
         if path == DNS_SOURCE:
             entries = ','.join('new DnsHostsItemClass('+','.join(json.dumps(value) for value in row)+')' for row in self.rows)
             return 'function DnsHostsItemClass(domain, IPAddress, DomainName){} var DnsHostsListTemp = new Array('+entries+(',' if entries else '')+'null);'
+        if path == '/html/bbsp/dhcp/dhcp.asp':
+            return 'new stLanHostInfo("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.1","1","192.168.100.254","255.255.255.0","1"); x.IPInterfaceIPAddress x.IPInterfaceSubnetMask'
+        if path == '/html/amp/ethinfo/ethinfo.asp':
+            return 'new DeviceLanMAC("InternetGatewayDevice.DeviceInfo","02:00:00:00:00:01","")'
         return 'GetDnsHostsList(); OnApplyButtonClick(); x.IPAddress x.DomainName ' + DNS_DOMAIN
 
 
