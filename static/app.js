@@ -212,7 +212,7 @@ $('#cancel-gateway-ip').addEventListener('click',()=>{setGatewayIpEditor(false);
 $('#gateway-address-input').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();applyGatewayIp();}if(event.key==='Escape'){event.preventDefault();setGatewayIpEditor(false);$('#edit-gateway-ip').focus();}});
 async function detectGateway(){
   clearTimeout(detectTimer);const address=$('#address').value.trim(),sequence=++detectSequence,status=$('#gateway-detection'),button=$('#detect-gateway');
-  if(!validProbeAddress(address)){status.textContent='Confira o endereço IP.';button.disabled=false;return;}
+  if(!validProbeAddress(address)){status.textContent=address?'Confira o endereço IP.':'Informe o IP do gateway para detectar o modelo.';button.disabled=false;return;}
   button.disabled=true;status.title='';status.textContent='Identificando gateway…';setGatewayVendor(false);
   try{await modelsReady;const result=await api('/api/detect',{address});if(sequence!==detectSequence||address!==$('#address').value.trim())return;
     if(manualGatewayModel)return;if(result.model)renderGatewayModel(result.model,Boolean(result.adapter_id?.startsWith('huawei-')));else status.textContent='Modelo não identificado';if(!result.supported)status.title='Selecione um modelo compatível manualmente.';
