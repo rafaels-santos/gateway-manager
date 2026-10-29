@@ -39,6 +39,6 @@ class SecurityTests(unittest.TestCase):
         self.assertNotIn(token.decode(), str(findings))
 
     def test_repository_scan_rejects_runtime_and_credential_files(self):
-        for name in ('data/labels.db', '.env', 'local.env.key', 'backup.sqlite', 'trace.log'):
+        for name in ('data/labels.db', '.env', 'local.env.key', 'backup.sqlite', 'trace.log', 'compose.local.yml'):
             self.assertTrue(scan(name, b''), name)
         self.assertEqual(scan('static/app.js', b'const value = "normal";'), [])

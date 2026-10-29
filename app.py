@@ -14,7 +14,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import os
-from services import notifications, storage
+from services import notifications, storage, connection
 from services import network_management
 
 ROOT = Path(__file__).parent
@@ -536,6 +536,10 @@ class Handler(BaseHTTPRequestHandler):
             raise GatewayError('Há uma mudança LAN aguardando verificação. Abra Endereço LAN e use Verificar novo endereço, sem reenviar o comando.')
         return s
     def do_GET(self):
+        if self.path == '/api/connection-defaults':
+            try: self.send_json(200, connection.defaults(labels))
+            except GatewayError as error: self.send_json(400, {'error': str(error)})
+            return
         if self.path == '/api/gateway-types':
             self.send_json(200, {'models': [{'id': key, 'label': adapter.model_label} for key, adapter in GATEWAY_ADAPTERS.items()]})
             return
@@ -545,7 +549,7 @@ class Handler(BaseHTTPRequestHandler):
                 pending = getattr(gw,'pending_lan_change',None)
                 with gw.lock:
                     if not pending: gw.devices()
-                self.send_json(200, {'connected': True, 'model': gw.model_id, 'model_label': gw.model_label, 'pending_lan':bool(pending), **getattr(gw,'identity',{})})
+                self.send_json(200, {'connected': True, 'address': gw.base, 'model': gw.model_id, 'model_label': gw.model_label, 'pending_lan':bool(pending), **getattr(gw,'identity',{})})
             except GatewayError as e: self.send_json(401, {'error': str(e)})
             return
         if self.path == '/api/network/lan-state':
@@ -828,6 +832,7 @@ class Handler(BaseHTTPRequestHandler):
                                     for attribute in ('base','cookies','opener','credentials','capability_matrix','dhcpv6_clients','lan_port_statuses','network_pages'):
                                         setattr(gw,attribute,getattr(replacement,attribute))
                                     gw.pending_lan_change = None
+                                    connection.remember(labels, gw, gw.credentials[0] if gw.credentials else '')
                                     record_capability(gw,'lan_address','write','verified')
                             if not getattr(gw,'pending_lan_change',None): start_monitor(gw)
                         except Exception:
@@ -898,18 +903,20 @@ class Handler(BaseHTTPRequestHandler):
                         replace_reservations=body.get('replace_reservations', False))
                 self.send_json(200, result)
             elif self.path == '/api/login':
-                gw = create_gateway(body.get('model', Gateway.model_id), body.get('address', '')); gw.login(body.get('username', ''), body.get('password', ''))
+                model, address, username, password = connection.resolve(labels, body)
+                gw = create_gateway(model, address); gw.login(username, password)
                 with gw.lock: identity=session_identity(gw)
                 parsed_origin = urllib.parse.urlsplit(origin)
                 if parsed_origin.scheme not in ('http', 'https') or not parsed_origin.hostname or parsed_origin.username or parsed_origin.password or parsed_origin.path or parsed_origin.query or parsed_origin.fragment:
                     raise GatewayError('Endereço do aplicativo inválido.')
                 with labels() as db:
                     db.execute('INSERT INTO app_origins (gateway,origin) VALUES (?,?) ON CONFLICT(gateway) DO UPDATE SET origin=excluded.origin', (gw.base, origin))
+                connection.remember(labels, gw, username)
                 key = secrets.token_urlsafe(32)
                 with LOCK: SESSIONS[key] = gw
                 with labels() as db: gw.pending_lan_change = network_management.restore_lan_journal(db,gw.base)
                 if not gw.pending_lan_change: start_monitor(gw)
-                self.send_json(200, {'ok': True, 'model': gw.model_id, 'model_label': gw.model_label, 'pending_lan':bool(gw.pending_lan_change), **identity}, key)
+                self.send_json(200, {'ok': True, 'address': gw.base, 'model': gw.model_id, 'model_label': gw.model_label, 'pending_lan':bool(gw.pending_lan_change), **identity}, key)
             elif self.path == '/api/block':
                 gw = self.session()
                 try: gw.block_client(body)

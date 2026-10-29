@@ -182,8 +182,8 @@ $('#reservation-delete-form').addEventListener('submit',async event=>{event.prev
 $('#cancel-reservation-delete').addEventListener('click',()=>$('#reservation-delete-dialog').close());
 $('#reservation-delete-dialog').addEventListener('close',()=>{pendingReservationDelete=null;});
 async function loadGatewayModels(){const select=$('#gateway-model'); try{const {models}=await api('/api/gateway-types'); select.replaceChildren();const manual=node('option','','Selecione o modelo');manual.value='';select.append(manual); for(const model of models){const option=node('option','',model.label);option.value=model.id;select.append(option)} select.disabled=models.length===0; if(!models.length)message('Nenhum modelo de gateway disponível.',true);}catch(err){message('Não foi possível carregar os modelos: '+err.message,true)}}
-async function showDashboard(session){ $('#device-model').textContent=(session.model_label || 'Gateway')+(session.firmware?` · ${session.firmware}`:''); $('#login-screen').hidden=true; $('#dashboard').hidden=false; if(session.pending_lan){clearInterval(deviceTimer);window.pendingLanRecovery=true;document.dispatchEvent(new CustomEvent('lan-recovery'));return;} window.pendingLanRecovery=false; await refreshDevices(); clearInterval(deviceTimer); deviceTimer=setInterval(()=>{if(!document.hidden)refreshDevices()},15000); }
-$('#connect').addEventListener('submit',async e=>{e.preventDefault();if(!$('#gateway-model').value){setManualGateway(true);$('#gateway-model').focus();message('Selecione um modelo compatível para conectar.',true);return}message('Conectando...');try{const session=await api('/api/login',{model:$('#gateway-model').value,address:$('#address').value,username:$('#username').value,password:$('#password').value});if(window.isSecureContext && window.PasswordCredential && navigator.credentials){try{await navigator.credentials.store(new PasswordCredential({id:$('#username').value,password:$('#password').value}))}catch{}}$('#password').value='';message('Conectado.');await showDashboard(session)}catch(err){$('#password').value='';message(err.message,true)}});
+async function showDashboard(session){ const panelUrl=gatewayPanelUrl(session.address||$('#address').value); if(panelUrl)$('#device-model').href=panelUrl;else $('#device-model').removeAttribute('href'); $('#device-model').textContent=(session.model_label || 'Gateway')+(session.firmware?` · ${session.firmware}`:''); $('#login-screen').hidden=true; $('#dashboard').hidden=false; if(session.pending_lan){clearInterval(deviceTimer);window.pendingLanRecovery=true;document.dispatchEvent(new CustomEvent('lan-recovery'));return;} window.pendingLanRecovery=false; await refreshDevices(); clearInterval(deviceTimer); deviceTimer=setInterval(()=>{if(!document.hidden)refreshDevices()},15000); }
+$('#connect').addEventListener('submit',async e=>{e.preventDefault();if(!$('#gateway-model').value){setManualGateway(true);$('#gateway-model').focus();message('Selecione um modelo compatível para conectar.',true);return}message('Conectando...');try{const session=await api('/api/login',{model:$('#gateway-model').value,address:$('#address').value,username:$('#username').value,password:$('#password').value,use_default_credentials:defaultCredentialCheckbox.checked&&!defaultCredentialCheckbox.disabled});if($('#password').value && window.isSecureContext && window.PasswordCredential && navigator.credentials){try{await navigator.credentials.store(new PasswordCredential({id:$('#username').value,password:$('#password').value}))}catch{}}$('#password').value='';message('Conectado.');await showDashboard(session)}catch(err){$('#password').value='';message(err.message,true)}});
 let detectTimer=null,detectSequence=0,manualGatewayModel=false;
 const modelsReady=loadGatewayModels();
 function validProbeAddress(value){try{const url=new URL(value.includes('://')?value:'http://'+value),host=url.hostname.replace(/^\[|\]$/g,'');return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)?host.split('.').every(part=>Number(part)<=255):host.includes(':')&&/^[a-f0-9:]+$/i.test(host);}catch{return false;}}
@@ -218,7 +218,7 @@ async function detectGateway(){
     if(manualGatewayModel)return;if(result.model)renderGatewayModel(result.model,Boolean(result.adapter_id?.startsWith('huawei-')));else status.textContent='Modelo não identificado';if(!result.supported)status.title='Selecione um modelo compatível manualmente.';
     if(!manualGatewayModel){$('#gateway-model').value=result.supported?result.adapter_id:'';}
   }catch(error){if(sequence===detectSequence){status.textContent='Detecção indisponível. Selecione o modelo manualmente.';status.title=error.message;}}
-  finally{if(sequence===detectSequence)button.disabled=false;}
+  finally{if(sequence===detectSequence){button.disabled=false;updateDefaultCredentials();}}
 }
 $('#address').addEventListener('input',()=>{clearTimeout(detectTimer);detectSequence++;manualGatewayModel=false;$('#gateway-model').value='';setManualGateway(false);$('#gateway-detection').title='';$('#detect-gateway').disabled=false;$('#gateway-detection').textContent='Aguardando um IP completo…';setGatewayVendor(false);if(validProbeAddress($('#address').value.trim()))detectTimer=setTimeout(detectGateway,900);});
 $('#address').addEventListener('blur',()=>{if(!manualGatewayModel&&validProbeAddress($('#address').value.trim())){clearTimeout(detectTimer);detectTimer=setTimeout(detectGateway,100);}});
@@ -226,7 +226,7 @@ function setManualGateway(open){$('#manual-model').hidden=!open;$('#manual-gatew
 $('#manual-gateway').addEventListener('click',()=>{const open=$('#manual-model').hidden;setManualGateway(open);if(open)$('#gateway-model').focus();});
 $('#gateway-model').addEventListener('change',()=>{manualGatewayModel=Boolean($('#gateway-model').value);if(manualGatewayModel){detectSequence++;$('#detect-gateway').disabled=false;$('#gateway-detection').title='';const label=$('#gateway-model').selectedOptions[0].textContent;renderGatewayModel(label.replace(/^Huawei /,''),/^Huawei /i.test(label));setManualGateway(false);$('#manual-gateway').focus();}});
 $('#detect-gateway').addEventListener('click',()=>{manualGatewayModel=false;setManualGateway(false);detectGateway();});
-api('/api/session').then(session=>showDashboard(session)).catch(()=>{if(!$('#login-screen').hidden)detectGateway();});
+api('/api/session').then(session=>showDashboard(session)).catch(()=>{if(!$('#login-screen').hidden)loadConnectionDefaults();});
 $('#reservation').addEventListener('submit',async e=>{e.preventDefault();message('Salvando reserva...');try{const mac=$('#mac').value.trim().toLowerCase(),id=$('#reservation-id').value,ip=$('#ip').value.trim();const old=reservations.find(row=>row.id===id);if(!old||old.mac!==mac||old.ip!==ip)await api('/api/reservation',{id,mac,ip});try{await api('/api/name',{mac,name:$('#name').value})}catch(err){message('Reserva salva, mas o identificador não foi salvo: '+err.message,true);await refreshReservations();return}resetForm();await refreshReservations();message('Dados salvos.')}catch(err){message(err.message,true)}});
 let hookData={hooks:[],defaults:{},event_labels:{}},editingHook=null,hookBusy=false;
 const hookFields={discord:[['url','URL do webhook','password']],generic:[['url','URL HTTPS pública','password']],slack:[['url','URL incoming webhook','password']],telegram:[['token','Token do bot','password'],['chat_id','Chat ID ou @canal','text']],whatsapp:[['token','Token de acesso Meta','password'],['phone_id','Phone Number ID','text'],['recipient','Destinatário com DDI (somente números)','text'],['version','Versão Graph API da sua conta (vXX.0)','text'],['template','Nome do template aprovado','text'],['language','Idioma do template (ex.: pt_BR)','text']]};
@@ -428,3 +428,28 @@ $('#apply-config').addEventListener('click',async event=>{
   }catch(error){$('#import-status').textContent=error.message;message(error.message,true)}finally{button.disabled=false;updateImportButtons()}
 });
 for(const selector of ['#import-devices','#import-reservations','#replace-names','#replace-reservations'])$(selector).addEventListener('change',updateImportButtons);
+
+// Password defaults stay on the server and are never returned by bootstrap.
+let connectionDefaults={},defaultCredentialChoice=true;
+const defaultCredentialLabel=node('label','switch-label server-credentials'),defaultCredentialCheckbox=node('input');
+defaultCredentialCheckbox.type='checkbox';defaultCredentialCheckbox.id='use-default-credentials';defaultCredentialLabel.hidden=true;
+defaultCredentialLabel.append(defaultCredentialCheckbox,document.createTextNode(' Usar senha padrão do servidor'));
+$('#password').closest('label').after(defaultCredentialLabel);
+function updateDefaultCredentials(){
+  const eligible=Boolean(connectionDefaults.credential_address&&gatewayPanelUrl($('#address').value)===gatewayPanelUrl(connectionDefaults.credential_address)&&$('#username').value===connectionDefaults.credential_username&&$('#gateway-model').value===connectionDefaults.credential_model);
+  defaultCredentialLabel.hidden=!connectionDefaults.credential_address;
+  defaultCredentialCheckbox.disabled=!eligible;defaultCredentialCheckbox.checked=eligible&&defaultCredentialChoice;
+  $('#password').required=!defaultCredentialCheckbox.checked;
+  $('#password').placeholder=defaultCredentialCheckbox.checked?'Senha configurada no servidor':'';
+}
+defaultCredentialCheckbox.addEventListener('change',()=>{defaultCredentialChoice=defaultCredentialCheckbox.checked;updateDefaultCredentials();});
+for(const selector of ['#address','#username','#gateway-model'])for(const event of ['input','change'])$(selector).addEventListener(event,updateDefaultCredentials);
+async function loadConnectionDefaults(){
+  try{
+    const defaults=await api('/api/connection-defaults');connectionDefaults=defaults;await modelsReady;
+    if(!$('#address').value&&defaults.address){$('#address').value=defaults.address;$('#gateway-ip-label').textContent=defaults.address;}
+    if(!$('#username').value)$('#username').value=defaults.username||'';
+    if(!$('#gateway-model').value&&defaults.model)$('#gateway-model').value=defaults.model;
+    updateDefaultCredentials();await detectGateway();updateDefaultCredentials();
+  }catch(error){message(error.message,true);detectGateway();}
+}

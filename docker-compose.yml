@@ -1,3 +1,5 @@
+name: "${GATEWAY_MANAGER_PROJECT:-gateway-manager}"
+
 services:
   gateway-manager:
     image: ghcr.io/rafaels-santos/gateway-manager:latest
@@ -11,6 +13,13 @@ services:
       PORT: "8080"
       PYTHONUNBUFFERED: "1"
       COOKIE_SECURE: "${COOKIE_SECURE:-0}"
+      GATEWAY_ADDRESS: "${GATEWAY_ADDRESS:-}"
+      GATEWAY_USERNAME: "${GATEWAY_USERNAME:-}"
+      GATEWAY_PASSWORD: "${GATEWAY_PASSWORD:-}"
+      GATEWAY_PASSWORD_FILE: "${GATEWAY_PASSWORD_FILE:-}"
+      GATEWAY_MODEL: "${GATEWAY_MODEL:-huawei-eg8145x6-10}"
+    labels:
+      com.centurylinklabs.watchtower.enable: "false"
     volumes:
       - gateway-manager-data:/data
     security_opt:
@@ -35,6 +44,7 @@ services:
 
 volumes:
   gateway-manager-data:
+    name: "${GATEWAY_MANAGER_DATA_VOLUME:-gateway-manager-data}"
 
 x-casaos:
   main: gateway-manager

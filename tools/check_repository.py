@@ -21,7 +21,7 @@ PATTERNS = {
 
 def scan(path, content):
     findings = []
-    if re.search(r'(^|/)(?:data|node_modules|__pycache__)/|(^|/)\.env(?:\.|$)|\.(?:db|sqlite3?|log|pem|key|p12|pfx)$', path):
+    if re.search(r'(^|/)(?:data|node_modules|__pycache__)/|(^|/)\.env(?:\.|$)|\.local\.ya?ml$|\.(?:db|sqlite3?|log|pem|key|p12|pfx)$', path):
         findings.append((path, 0, 'Runtime state or credential file'))
     for label, pattern in PATTERNS.items():
         for match in re.finditer(pattern, content):

@@ -18,3 +18,5 @@ node_modules/
 coverage/
 dist/
 build/
+*.local.yml
+*.local.yaml

@@ -106,3 +106,19 @@ test('internal network extension pages use their loader and preserve page select
   }
   assert.deepEqual(loaded,['inventory','history','planning','diagnostic']);
 });
+
+
+test('top gateway link opens the authenticated address, including restored sessions',async()=>{
+  const top={removeAttribute(name){delete this[name];}},controls={'#device-model':top,'#address':{value:'192.168.50.99'},'#login-screen':{},'#dashboard':{}};
+  const context=vm.createContext({URL,$:selector=>controls[selector],window:{},document:{hidden:false},refreshDevices:async()=>{},clearInterval(){},setInterval(){return 1;},deviceTimer:null});
+  const urls=source.slice(source.indexOf('function validProbeAddress'),source.indexOf('function setGatewayVendor'));
+  const dashboard=source.slice(source.indexOf('async function showDashboard'),source.indexOf("$('#connect').addEventListener"));
+  vm.runInContext(urls+'\n'+dashboard,context);
+  await vm.runInContext("showDashboard({address:'https://192.168.50.1:8443',model_label:'Huawei',firmware:'test'})",context);
+  assert.equal(top.href,'https://192.168.50.1:8443/');
+  assert.equal(top.textContent,'Huawei · test');
+  await vm.runInContext("showDashboard({address:'javascript:alert(1)'})",context);
+  assert.equal(top.href,undefined);
+  const html=fs.readFileSync(path.join(__dirname,'../static/index.html'),'utf8');
+  assert.match(html,/<a class="device-model" id="device-model" target="_blank" rel="noopener noreferrer"/);
+});

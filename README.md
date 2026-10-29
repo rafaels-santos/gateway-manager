@@ -34,6 +34,13 @@ O arquivo `docker-compose.yml` inclui persistência, verificação de saúde, li
 
 | Variável | Padrão | Uso |
 | --- | --- | --- |
+| `GATEWAY_MANAGER_PROJECT` | `gateway-manager` | Nome estável do projeto Compose |
+| `GATEWAY_MANAGER_DATA_VOLUME` | `gateway-manager-data` | Nome físico do volume persistente |
+| `GATEWAY_ADDRESS` | vazio | IP inicial do gateway, opcionalmente com esquema e porta |
+| `GATEWAY_USERNAME` | vazio | Usuário padrão do gateway |
+| `GATEWAY_PASSWORD` | vazio | Senha padrão usada apenas no servidor, mediante seleção no login |
+| `GATEWAY_PASSWORD_FILE` | vazio | Alternativa à senha em variável: caminho de arquivo montado e legível no contêiner |
+| `GATEWAY_MODEL` | `huawei-eg8145x6-10` | Adaptador padrão |
 | `GATEWAY_MANAGER_PORT` | `8080` | Porta publicada pelo Compose |
 | `COOKIE_SECURE` | `0` | Use `1` quando o acesso ao app ocorrer exclusivamente por HTTPS |
 | `DATA_DIR` | `/data` no contêiner | Diretório persistente do aplicativo |
@@ -41,20 +48,37 @@ O arquivo `docker-compose.yml` inclui persistência, verificação de saúde, li
 
 O volume `gateway-manager-data` guarda o estado do aplicativo. Não remova esse volume durante uma atualização. O exportador portátil leva identificadores/categorias e reservas IPv4; ele não substitui um backup completo do volume.
 
-Para atualizar:
+O último IP conectado com sucesso e o usuário informado são lembrados no volume e reaparecem no login. Uma falha de autenticação não muda o padrão. `GATEWAY_ADDRESS` inicia esse valor; se a variável continuar igual em um redeploy, prevalece o último IP conectado. Alterar explicitamente essa variável no Compose define um novo endereço inicial. Isso é uma configuração persistente da aplicação; o processo não modifica as variáveis do Docker.
+
+A senha digitada no navegador não é gravada nesse cadastro. Se configurar `GATEWAY_PASSWORD` ou `GATEWAY_PASSWORD_FILE`, o login oferece **Usar senha padrão do servidor**. O segredo não é enviado ao navegador e só pode ser usado com o endereço, usuário e modelo correspondentes às variáveis do servidor. Uma senha digitada manualmente tem prioridade. Não há login automático ao carregar a página. O arquivo indicado por `GATEWAY_PASSWORD_FILE` precisa ser montado explicitamente como somente leitura, com permissão para o usuário do contêiner.
+
+### Gerar um Compose personalizado
+
+No servidor, a partir deste repositório, com Python 3 e permissão para consultar o Docker:
 
 ```sh
-docker compose pull
-docker compose up -d
+python tools/generate_compose.py --container gateway-manager --ask-password
 ```
 
-`pull_policy: always` verifica a imagem ao executar o Compose; isso **não** cria um atualizador em segundo plano. O Compose não monta o socket Docker nem instala serviços com controle sobre o host.
+O gerador cria `compose.local.yml`, detectando e preservando projeto Compose, nome do contêiner, porta e volume ou bind mount em `/data`. Volumes existentes são referenciados como externos, sem criação de um volume vazio no lugar deles. Ele consulta o último endereço e usuário da aplicação; use `--gateway` e `--username` para informá-los se a versão instalada ainda não disponibilizar essa consulta. Não lê senhas do contêiner. `--ask-password` solicita o segredo diretamente no terminal, sem exibi-lo; sem essa opção, mantém a referência à variável `GATEWAY_PASSWORD`.
+
+Para uma instalação nova, omita `--container`. Ajuste `--project`, `--port`, `--gateway`, `--username` e `--volume` conforme necessário. Use `--external-volume` somente para um volume já existente. O arquivo gerado exige a extensão `.local.yml` ou `.local.yaml`, fica fora do Git e, no Linux, é criado com permissão `0600`. Não o publique nem compartilhe se incluir credenciais. Importe seu conteúdo no ZimaOS ou use o próprio Compose.
+
+Para atualizar, faça o redeploy do **mesmo arquivo**, preservando o nome do projeto e o armazenamento:
+
+```sh
+docker compose -f compose.local.yml up -d --pull always --force-recreate
+```
+
+Não use `down -v`: esse comando pode apagar volumes de instalações que não os marcaram como externos.
+
+`pull_policy: always` verifica a imagem ao executar o Compose; isso **não** cria um atualizador em segundo plano. O Compose não monta o socket Docker nem instala serviços com controle sobre o host. A atualização ocorre somente durante o redeploy; o serviço também desativa a atualização por Watchtower pela sua label. Se houver um atualizador de uma implantação antiga, retire esse serviço do Compose antigo e pare seu contêiner após migrar, preservando o volume da aplicação.
 
 ## Segurança e operação
 
 - Use em uma rede administrativa confiável. Para acesso remoto, proteja o serviço com VPN ou um proxy HTTPS com controle de acesso; não publique a porta diretamente na internet.
 - O contêiner executa sem usuário root, sem capabilities Linux e sem elevação de privilégios. O estado gravável fica no volume persistente.
-- As credenciais do gateway ficam na memória da sessão do servidor. Reiniciar o aplicativo exige nova conexão; alguns firmwares também limitam sessões simultâneas.
+- As credenciais digitadas ficam na memória da sessão do servidor. Defaults de senha declarados no Compose permanecem no ambiente ou no arquivo de segredo do servidor; quem tem acesso administrativo ao Docker pode lê-los. Quem consegue acessar o aplicativo pode usar a senha padrão delegada para o gateway configurado: restrinja o acesso à rede administrativa. Reiniciar o aplicativo exige nova conexão; alguns firmwares também limitam sessões simultâneas.
 - URLs de hooks e tokens das integrações são armazenados no banco local para permitir notificações. Proteja o volume e seus backups: esses dados não são criptografados em repouso pelo aplicativo e não devem ser adicionados ao Git.
 - As respostas autenticadas usam `Cache-Control: no-store`; cookies de sessão usam `HttpOnly` e `SameSite=Strict`. Ative `COOKIE_SECURE=1` somente quando houver HTTPS.
 - Alterações de configuração exigem confirmação e releitura quando suportadas. Mudanças de Wi-Fi, DHCP e LAN podem interromper o acesso; mantenha uma alternativa de conexão. Não há promessa de rollback automático.
@@ -68,7 +92,7 @@ services/              Persistência, notificações e operações da rede
 gateway_adapters/      Protocolos, parsers e adaptadores dos gateways
 static/                Interface web e navegação
 tests/                 Testes de regressão e segurança
-tools/                 Verificações do repositório
+tools/                 Verificações e gerador de Compose privado
 ```
 
 O adaptador concentra os objetos e comandos permitidos do fabricante. Os serviços cuidam do estado local; a interface usa as rotas explícitas da aplicação, sem um proxy genérico para comandos do roteador.
