@@ -6,7 +6,7 @@ from gateway_adapters.errors import GatewayError
 
 class LogSourceTests(unittest.TestCase):
     def test_missing_user_log_does_not_guess_alternate_folder(self):
-        gateway=Gateway('192.168.100.254')
+        gateway=Gateway('192.168.50.254')
         with patch.object(gateway,'request',side_effect=[GatewayError('Gateway recusou consulta (HTTP 404).'),'']) as request:
             with self.assertRaisesRegex(GatewayError,'Epadmin'):gateway.logs()
             self.assertEqual(request.call_count,2)
@@ -14,20 +14,20 @@ class LogSourceTests(unittest.TestCase):
             self.assertEqual(request.call_args_list[-1].args,('/index.asp',))
 
     def test_confirmed_native_user_log_uri_is_read_without_other_requests(self):
-        gateway=Gateway('192.168.100.254')
+        gateway=Gateway('192.168.50.254')
         page='document.getElementById("logarea").value = OldLogText;\n'+"document.getElementById('logarea').value = '2026-10-29 12:00:00 [Warning][Alarm-Log] Test';"
         with patch.object(gateway,'request',return_value=page) as request:
             self.assertEqual(gateway.logs()['events'][0]['level'],'WAR')
             request.assert_called_once_with('/html/ssmp/userlog/logview.asp',referer='/index.asp',max_redirects=0)
 
     def test_permission_denial_does_not_try_another_folder(self):
-        gateway=Gateway('192.168.100.254')
+        gateway=Gateway('192.168.50.254')
         with patch.object(gateway,'request',side_effect=GatewayError('HTTP 403')) as request:
             with self.assertRaises(GatewayError):gateway.logs()
             self.assertEqual(request.call_count,1)
 
     def test_discovered_native_menu_path_is_used_and_cached(self):
-        gateway=Gateway('192.168.100.254')
+        gateway=Gateway('192.168.50.254')
         page="document.getElementById('logarea').value = 'entry';"
         menu='var item="html/ssmp/userlog/userlogview.asp";'
         with patch.object(gateway,'request',side_effect=[GatewayError('(HTTP 404)'),menu,page,page]) as request:
@@ -45,14 +45,14 @@ class LogSourceTests(unittest.TestCase):
 
     def test_only_observed_menu_scripts_are_followed_using_document_base(self):
         from gateway_adapters.huawei.log_discovery import discover_log_paths
-        gateway=Gateway('192.168.100.254')
+        gateway=Gateway('192.168.50.254')
         source='<script src="/Cusjs/InitMenu.js?v=1"></script><script src="https://external.example/menu.js"></script>'
         with patch.object(gateway,'request',side_effect=[source,'var url="html/ssmp/userlog/userlogview.asp";']) as request:
             self.assertEqual(discover_log_paths(gateway),{'user':'/html/ssmp/userlog/userlogview.asp'})
             self.assertEqual(request.call_args.args,('/Cusjs/InitMenu.js?v=1',))
 
     def test_menu_permission_failure_does_not_trigger_another_log_path(self):
-        gateway=Gateway('192.168.100.254')
+        gateway=Gateway('192.168.50.254')
         with patch.object(gateway,'request',side_effect=[GatewayError('(HTTP 404)'),GatewayError('(HTTP 403)')]) as request:
             with self.assertRaisesRegex(GatewayError,'403'):gateway.logs()
             self.assertEqual(request.call_count,2)

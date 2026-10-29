@@ -1,4 +1,3 @@
-import base64
 import datetime
 import html
 import http.cookiejar
@@ -9,15 +8,14 @@ import re
 import secrets
 import sqlite3
 import threading
-from contextlib import contextmanager
 import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import os
-import notifications
-import network_management
+from services import notifications, storage
+from services import network_management
 
 ROOT = Path(__file__).parent
 STATIC = ROOT / 'static'
@@ -32,31 +30,13 @@ HUAWEI_ONT_PRODUCT_URL = 'https://e.huawei.com/en/products/optical-terminal/eg81
 HUAWEI_SOFTWARE_URL = 'https://support.huawei.com/enterprise/en/software'
 DATA_DIR = Path(os.environ.get('DATA_DIR', str(ROOT / 'data')))
 
-@contextmanager
 def labels():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DATA_DIR / 'labels.db')
-    db.execute('CREATE TABLE IF NOT EXISTS labels (gateway TEXT, mac TEXT, name TEXT, PRIMARY KEY (gateway, mac))')
-    db.execute('CREATE TABLE IF NOT EXISTS webhook_config (gateway TEXT PRIMARY KEY, url TEXT NOT NULL, enabled INTEGER NOT NULL, baseline INTEGER NOT NULL DEFAULT 0)')
-    db.execute('CREATE TABLE IF NOT EXISTS seen_devices (gateway TEXT NOT NULL, mac TEXT NOT NULL, PRIMARY KEY (gateway, mac))')
-    db.execute('CREATE TABLE IF NOT EXISTS app_origins (gateway TEXT PRIMARY KEY, origin TEXT NOT NULL)')
-    db.execute('CREATE TABLE IF NOT EXISTS device_tags (gateway TEXT NOT NULL, mac TEXT NOT NULL, tag TEXT NOT NULL, PRIMARY KEY (gateway, mac))')
-    db.execute('CREATE TABLE IF NOT EXISTS webhook_options (gateway TEXT PRIMARY KEY, options TEXT NOT NULL)')
-    db.execute('CREATE TABLE IF NOT EXISTS webhook_state (gateway TEXT, mac TEXT, state TEXT NOT NULL, PRIMARY KEY(gateway,mac))')
-    notifications.schema(db)
-    network_management.schema(db)
-    try:
-        if os.name != 'nt': os.chmod(DATA_DIR / 'labels.db', 0o600)
-        with db:
-            yield db
-    finally:
-        db.close()
+    return storage.open_database(DATA_DIR)
 
 from gateway_adapters.errors import GatewayError
 from gateway_adapters.parsers import parse_constructors
-from gateway_adapters.transport import NoRedirect
 from gateway_adapters.huawei import Gateway
-from gateway_adapters.huawei.constants import PATH, DHCP_PATH, WIFI_PATH, LAN_DOMAIN, DOMAIN, SSID_MAP
+from gateway_adapters.huawei.constants import DOMAIN
 from gateway_adapters.capabilities import capability_snapshot, record_capability
 from gateway_adapters.client_model import normalize_clients
 
@@ -277,11 +257,6 @@ EVENTS = {
     'blocked_ip_changed': ('Cliente com regra de bloqueio mudou de IP', 'Cliente com regra de bloqueio mudou de IP.\nNome: {name}\nIP anterior: {previous_ip}\nIP atual: {ip}\nMAC: {mac}\nBloqueio ativo: {block_active}\n{link}', False),
     'blocked_disconnected': ('Cliente com regra de bloqueio desconectou', 'Cliente com regra de bloqueio desconectado.\nNome: {name}\nIP: {ip}\nMAC: {mac}\nBloqueio ativo: {block_active}\n{link}', False),
 }
-
-def webhook_options(db, gateway):
-    row = db.execute('SELECT options FROM webhook_options WHERE gateway=?', (gateway,)).fetchone()
-    options = json.loads(row[0]) if row else {}
-    return {'provider':options.get('provider','discord'), 'events':{k:options.get('events',{}).get(k,{'enabled':v[2],'template':v[1]}) for k,v in EVENTS.items()}}
 
 def validate_generic_webhook(url):
     try:
@@ -534,13 +509,23 @@ def create_gateway(model_id, address):
     return adapter(address)
 
 class Handler(BaseHTTPRequestHandler):
+    server_version = 'GatewayManager'
+    sys_version = ''
+
+    def end_headers(self):
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        super().end_headers()
+
     def log_message(self, fmt, *args):
         # Do not log form data, gateway addresses, or credentials.
         print('HTTP request handled', flush=True)
     def send_json(self, status, obj, cookie=None):
         data = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(status); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.send_header('Cache-Control', 'no-store')
-        if cookie is not None: self.send_header('Set-Cookie', 'session=' + cookie + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + ('604800' if cookie else '0'))
+        if cookie is not None:
+            secure = '; Secure' if os.environ.get('COOKIE_SECURE') == '1' else ''
+            self.send_header('Set-Cookie', 'session=' + cookie + '; HttpOnly; SameSite=Strict; Path=/; Max-Age=' + ('604800' if cookie else '0') + secure)
         self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
     def session(self, *, allow_pending=False):
         from http.cookies import SimpleCookie
@@ -598,14 +583,6 @@ class Handler(BaseHTTPRequestHandler):
                 gw = self.session()
                 with gw.lock: result = gw.dnsv6_config()
                 record_capability(gw, 'dns_ipv6', 'read', 'available', 'Objeto local de DNSv6 reconhecido.')
-                self.send_json(200, result)
-            except GatewayError as error: self.send_json(400, {'error': str(error)})
-            return
-        if self.path == '/api/maintenance/integration-report':
-            try:
-                from gateway_adapters.huawei.integration_report import integration_report
-                gw = self.session()
-                with gw.lock: result = integration_report(gw)
                 self.send_json(200, result)
             except GatewayError as error: self.send_json(400, {'error': str(error)})
             return

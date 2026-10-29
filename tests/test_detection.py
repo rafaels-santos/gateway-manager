@@ -26,28 +26,28 @@ class DetectionTests(unittest.TestCase):
 
     def test_probe_is_get_only_without_login_and_private_ip_required(self):
         with patch.object(app.Gateway,'request',return_value='<title>EG8145X6-10</title>') as request,patch.object(app.Gateway,'login') as login:
-            self.assertTrue(app.detect_gateway('192.168.100.254')['supported'])
+            self.assertTrue(app.detect_gateway('192.168.50.254')['supported'])
             request.assert_called_once_with('/',timeout=5,max_redirects=1)
             login.assert_not_called()
         for address in ('8.8.8.8','127.0.0.1','http://192.168.1.1@evil.example','http://192.168.1.1/path'):
             with self.assertRaises(app.GatewayError):app.detect_gateway(address)
 
     def test_authenticated_header_version_and_unavailable_logs(self):
-        gateway=app.Gateway('192.168.100.254')
+        gateway=app.Gateway('192.168.50.254')
         with patch.object(gateway,'logs',return_value={'raw':'Manufacturer:Huawei;\nProductClass:EG8145X6-10;\nSWVer:V5R024C10S106;\nHWVer:343D.D;'}):
             self.assertEqual(app.session_identity(gateway),{'firmware':'V5R024C10S106','hardware':'343D.D'})
         with patch.object(gateway,'logs',side_effect=app.GatewayError('Sem permissão')),patch.object(gateway,'request',side_effect=app.GatewayError('Sem leitura')):
             self.assertIsNone(app.session_identity(gateway)['firmware'])
 
     def test_authenticated_semicolon_header_and_event_text_are_distinct(self):
-        gateway=app.Gateway('192.168.100.254')
+        gateway=app.Gateway('192.168.50.254')
         with patch.object(gateway,'logs',return_value={'raw':'\ufeffManufacturer:Huawei;ProductClass:EG8145X6-10; HWVer:343D.D; SWVer:V5R024C10S106;\n2026-10-29 10:00:00 [Info][Config-Log] name;SWVer:FAKE;'}):
             self.assertEqual(app.session_identity(gateway),{'firmware':'V5R024C10S106','hardware':'343D.D'})
         with patch.object(gateway,'logs',return_value={'raw':'2026-10-29 10:00:00 [Info][Config-Log] name;SWVer:FAKE;HWVer:FAKE;'}),patch.object(gateway,'request',side_effect=app.GatewayError('Sem leitura')):
             self.assertEqual(app.session_identity(gateway),{'firmware':None,'hardware':None})
 
     def test_device_information_fallback_uses_explicit_fields_without_returning_serial(self):
-        gateway=app.Gateway('192.168.100.254')
+        gateway=app.Gateway('192.168.50.254')
         page='function stDevInfo(domain,HWVer,SWVer,SerialNumber){} new stDevInfo("InternetGatewayDevice.DeviceInfo","343D.D","V5R024C10S106","SECRET_SERIAL");'
         with patch.object(gateway,'logs',side_effect=app.GatewayError('HTTP 404')),patch.object(gateway,'request',return_value=page) as request:
             result=app.session_identity(gateway)

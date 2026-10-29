@@ -61,13 +61,8 @@ class GatewayTransport:
         req = urllib.request.Request(self.base + path, data=payload, headers=headers)
         try:
             with self.opener.open(req, timeout=timeout) as response:
-                if urllib.parse.urlsplit(path).path == '/login.cgi':
-                    print('Diagnóstico HTTP: etapa=/login.cgi; status=%s; cookies=%s; Set-Cookie=%s' % (response.status, ','.join(c.name for c in self.cookies) or 'nenhum', bool(response.headers.get_all('Set-Cookie'))), flush=True)
                 return response.read(2_000_000).decode('utf-8-sig', errors='replace')
         except urllib.error.HTTPError as e:
-            if urllib.parse.urlsplit(path).path in ('/login.cgi', '/index.asp'):
-                location = urllib.parse.urlsplit(e.headers.get('Location', '')).path or 'nenhum'
-                print('Diagnóstico HTTP: etapa=%s; status=%s; destino=%s; cookies=%s; Set-Cookie=%s' % (urllib.parse.urlsplit(path).path, e.code, location, ','.join(c.name for c in self.cookies) or 'nenhum', bool(e.headers.get_all('Set-Cookie'))), flush=True)
             if e.code in (301, 302, 303) and e.headers.get('Location', '').startswith('/') and not e.headers.get('Location', '').startswith('//'):
                 if max_redirects<=0: raise GatewayError('O gateway excedeu o limite de redirecionamentos.')
                 return self.request(e.headers['Location'],timeout=timeout,max_redirects=max_redirects-1)
@@ -86,13 +81,7 @@ class GatewayTransport:
             token = self.request('/asp/GetRandCount.asp', {}, xhr=True).strip()
             if not token or len(token) > 256:
                 raise GatewayError('O gateway não retornou um token de login válido.')
-            result = self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
-            # Emit structural markers only: never print response text, tokens or credentials.
-            markers = ('document.cookie', 'location', 'window.name', 'Set-Cookie', 'login', 'error', 'fail', 'script', 'iframe', 'refresh', 'redirect', 'waiting', 'pagename', 'index.asp', 'login.asp')
-            destinations = re.findall(r"(?:pageName|location(?:\.href)?)\s*=\s*['\"](/(?:index\.asp|login\.asp)?)['\"]", result, re.I)
-            print('Diagnóstico da resposta: tamanho=%d; marcadores=%s; destino=%s' % (len(result), ','.join(m for m in markers if m.lower() in result.lower()) or 'nenhum', ','.join(destinations) or 'nenhum'), flush=True)
-            fail = re.search(r"(?:var\s+)?FailStat\s*=\s*['\"](\d+)['\"]", result)
-            print('Diagnóstico de login: página de login=%s; FailStat=%s; cookies=%s' % ('txt_Password' in result, fail.group(1) if fail else 'ausente', ','.join(c.name for c in self.cookies) or 'nenhum'), flush=True)
+            self.request('/login.cgi', {'UserName': user, 'PassWord': base64.b64encode(password.encode()).decode(), 'Language': 'english', 'x.X_HW_Token': token})
             page = self.request('/index.asp')
             if not re.search(r'logout', page, re.I):
                 raise GatewayError('Login não confirmado. Verifique usuário, senha e permissões.')

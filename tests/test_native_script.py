@@ -1,9 +1,7 @@
 import json
 import unittest
-from unittest.mock import Mock
 
-from gateway_adapters.errors import GatewayError
-from gateway_adapters.huawei.integration_report import integration_report, selected_functions
+from gateway_adapters.huawei.native_script import selected_functions
 
 
 class ReportTests(unittest.TestCase):
@@ -28,13 +26,3 @@ function Other(){return pageToken;}
                        'function AddSubmitParam(x){new stPreSharedKey("SECRET");}',
                        'function AddSubmitParam(x){'):
             self.assertEqual(selected_functions(source, ('AddSubmitParam',)), {})
-
-    def test_read_failure_is_reported_without_error_body_and_no_write(self):
-        gateway = Mock(model_id='huawei-eg8145x6-10', identity={},discovered_log_paths={})
-        gateway.request.side_effect = [GatewayError('sensitive response body'), 'function CheckConfigChannel(){return true;}', '', '']
-        result = integration_report(gateway)
-        self.assertTrue(result['read_only'])
-        self.assertEqual(result['sources'][0]['status'], 'unavailable')
-        self.assertIn('CheckConfigChannel', result['sources'][1]['functions'])
-        self.assertNotIn('sensitive response body', json.dumps(result))
-        self.assertTrue(all(len(call.args) == 1 for call in gateway.request.call_args_list))

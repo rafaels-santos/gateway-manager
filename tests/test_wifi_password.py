@@ -15,7 +15,7 @@ NEW = 'ReplacementKey!789'
 
 class PasswordGateway(Gateway):
     def __init__(self):
-        super().__init__('192.168.100.254')
+        super().__init__('192.168.50.254')
         self.keys = {ROOT+'1': OLD, ROOT+'5': OLD}
         self.writes = []
         self.partial = self.timeout = False

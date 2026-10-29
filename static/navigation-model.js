@@ -26,8 +26,12 @@
     return null;
   }
   function wifiSelection(rows,id){return rows.some(row=>row.id===id)?id:rows[0]?.id||'';}
+  function sortWifiNetworks(rows){
+    const rank=row=>row.guest?3:row.primary&&row.band==='2G'?0:row.primary&&row.band==='5G'?1:2;
+    return rows.map((row,index)=>({row,index})).sort((a,b)=>rank(a.row)-rank(b.row)||a.index-b.index).map(item=>item.row);
+  }
   function matchesNetwork(card,selected){return !!selected&&(card.id===selected||(card.members||[]).includes(selected));}
-  const model={groups,locate,wifiSelection,matchesNetwork};
+  const model={groups,locate,wifiSelection,matchesNetwork,sortWifiNetworks};
   if(typeof module!=='undefined'&&module.exports)module.exports=model;
   else root.navigationModel=model;
 })(typeof window==='undefined'?{}:window);

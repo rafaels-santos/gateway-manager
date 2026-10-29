@@ -5,7 +5,7 @@ import urllib.parse
 
 from ..errors import GatewayError
 from ..parsers import parse_constructors
-from .integration_report import selected_functions
+from .native_script import selected_functions
 from .radio_options import preview_radio
 
 SHARED_SOURCE = '/html/amp/common/wlan_list.asp'
@@ -103,7 +103,7 @@ def apply_radio_change(gateway, body):
         before = gateway.radio_config()
         target = next((row for row in before if row['id'] == body.get('id')), None)
         if not target or not target.get('channel_write_available'):
-            raise GatewayError('Contrato de rádio, perfil ou dependências ainda não reconhecidos. Consulte o diagnóstico de integração.')
+            raise GatewayError('Contrato de rádio, perfil ou dependências ainda não reconhecidos. Confira a compatibilidade do firmware nesta sessão.')
         plan = preview_radio(target, body)
         selection, width = plan['channel'], plan['width_code']
         if selection == target['channel_selection'] and width == str(target['width_code']): return target

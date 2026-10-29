@@ -6,20 +6,20 @@ import io
 from email.message import Message
 from unittest.mock import patch
 
-import network_management as nm
+from services import network_management as nm
 from gateway_adapters.errors import GatewayError
 from gateway_adapters.huawei import Gateway
 from gateway_adapters.huawei.local_records import DNS_SOURCE, DNS_DOMAIN, IPV6_DOMAIN, interface_id, parse_allocations
 from gateway_adapters.huawei.observed_readers import dhcpv6_leases, mesh_nodes, observed_fields
 
 
-CURRENT = {'lan_ip': '192.168.100.254', 'mask': '255.255.255.0', 'start': '192.168.100.1', 'end': '192.168.100.200', 'enabled': True}
+CURRENT = {'lan_ip': '192.168.50.254', 'mask': '255.255.255.0', 'start': '192.168.50.1', 'end': '192.168.50.200', 'enabled': True}
 MAC = 'aa:bb:cc:dd:ee:fe'
 
 
 class LocalGateway(Gateway):
     def __init__(self):
-        super().__init__('192.168.100.254')
+        super().__init__('192.168.50.254')
         self.rows, self.writes = [], []
         self.confirm_write = True
     def dhcp_config(self): return CURRENT
@@ -35,7 +35,7 @@ class LocalGateway(Gateway):
             entries = ','.join('new DnsHostsItemClass('+','.join(json.dumps(value) for value in row)+')' for row in self.rows)
             return 'function DnsHostsItemClass(domain, IPAddress, DomainName){} var DnsHostsListTemp = new Array('+entries+(',' if entries else '')+'null);'
         if path == '/html/bbsp/dhcp/dhcp.asp':
-            return 'new stLanHostInfo("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.1","1","192.168.100.254","255.255.255.0","1"); x.IPInterfaceIPAddress x.IPInterfaceSubnetMask'
+            return 'new stLanHostInfo("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.IPInterface.1","1","192.168.50.254","255.255.255.0","1"); x.IPInterfaceIPAddress x.IPInterfaceSubnetMask'
         if path == '/html/amp/ethinfo/ethinfo.asp':
             return 'new DeviceLanMAC("InternetGatewayDevice.DeviceInfo","02:00:00:00:00:01","")'
         return 'GetDnsHostsList(); OnApplyButtonClick(); x.IPAddress x.DomainName ' + DNS_DOMAIN
@@ -45,14 +45,14 @@ class LocalRecordsTests(unittest.TestCase):
     def test_dns_add_writes_only_local_fields_and_checks_entire_result(self):
         gateway = LocalGateway()
         snapshot = gateway.local_records('dns')
-        updated = gateway.save_local_record({'kind':'dns','action':'save','name':'Printer.home.arpa','ip':'192.168.100.20','expected':snapshot['expected'],'confirm':'APLICAR'})
+        updated = gateway.save_local_record({'kind':'dns','action':'save','name':'Printer.home.arpa','ip':'192.168.50.20','expected':snapshot['expected'],'confirm':'APLICAR'})
         self.assertEqual(updated['records'][0]['name'], 'printer.home.arpa')
         self.assertEqual(set(gateway.writes[0][1]), {'x.DomainName','x.IPAddress','x.X_HW_Token'})
         self.assertIn('x=InternetGatewayDevice.X_HW_DNS.HOSTS', gateway.writes[0][0])
 
     def test_dns_changed_snapshot_or_public_address_prevents_write(self):
         gateway = LocalGateway()
-        body = {'kind':'dns','action':'save','name':'printer.home.arpa','ip':'192.168.100.20','expected':'stale','confirm':'APLICAR'}
+        body = {'kind':'dns','action':'save','name':'printer.home.arpa','ip':'192.168.50.20','expected':'stale','confirm':'APLICAR'}
         with self.assertRaises(GatewayError): gateway.save_local_record(body)
         body.update(expected=gateway.local_records('dns')['expected'], ip='8.8.8.8')
         with self.assertRaises(GatewayError): gateway.save_local_record(body)
@@ -61,11 +61,11 @@ class LocalRecordsTests(unittest.TestCase):
     def test_unconfirmed_dns_write_is_not_reported_as_success_and_is_not_retried(self):
         gateway = LocalGateway(); gateway.confirm_write = False
         with self.assertRaisesRegex(GatewayError, 'não confirmou'):
-            gateway.save_local_record({'kind':'dns','action':'save','name':'printer.home.arpa','ip':'192.168.100.20','expected':gateway.local_records('dns')['expected'],'confirm':'APLICAR'})
+            gateway.save_local_record({'kind':'dns','action':'save','name':'printer.home.arpa','ip':'192.168.50.20','expected':gateway.local_records('dns')['expected'],'confirm':'APLICAR'})
         self.assertEqual(len(gateway.writes), 1)
 
     def test_dns_delete_requires_existing_id_and_preserves_expected_table(self):
-        gateway = LocalGateway(); gateway.rows = [[DNS_DOMAIN+'.1','192.168.100.20','printer.home.arpa']]
+        gateway = LocalGateway(); gateway.rows = [[DNS_DOMAIN+'.1','192.168.50.20','printer.home.arpa']]
         updated = gateway.save_local_record({'kind':'dns','action':'delete','id':DNS_DOMAIN+'.1','expected':gateway.local_records('dns')['expected'],'confirm':'APLICAR'})
         self.assertEqual(updated['records'], [])
         self.assertEqual(set(gateway.writes[0][1]), {DNS_DOMAIN+'.1','x.X_HW_Token'})
@@ -90,27 +90,27 @@ class LocalRecordsTests(unittest.TestCase):
 
 class NetworkPlanningTests(unittest.TestCase):
     def test_lan_preview_finds_dhcp_reservation_and_occupied_address_conflicts(self):
-        rows = [{'mac':MAC,'ip':'192.168.100.90','enabled':True}]
+        rows = [{'mac':MAC,'ip':'192.168.50.90','enabled':True}]
         result = nm.preview_lan(CURRENT, rows, [], {'ip':'192.168.101.254','mask':'255.255.255.0'})
         self.assertEqual(len(result['blockers']), 2)
         self.assertEqual(result['affected_reservations'][0]['mac'], MAC.upper())
         self.assertFalse(result['apply_available'])
-        occupied = nm.preview_lan(CURRENT, [], [{'status':'online','ip':'192.168.100.220','mac':MAC}], {'ip':'192.168.100.220','mask':'255.255.255.0'})
+        occupied = nm.preview_lan(CURRENT, [], [{'status':'online','ip':'192.168.50.220','mac':MAC}], {'ip':'192.168.50.220','mask':'255.255.255.0'})
         self.assertIn('Outro cliente', occupied['blockers'][0])
 
     def test_lan_preview_rejects_noncontiguous_host_and_public_masks(self):
-        for ip, mask in [('192.168.100.2','0.0.0.255'), ('192.168.100.2','255.0.0.0'), ('8.8.8.8','255.255.255.0'), ('192.168.100.0','255.255.255.0')]:
+        for ip, mask in [('192.168.50.2','0.0.0.255'), ('192.168.50.2','255.0.0.0'), ('8.8.8.8','255.255.255.0'), ('192.168.50.0','255.255.255.0')]:
             with self.assertRaises(GatewayError): nm.preview_lan(CURRENT, [], [], {'ip':ip,'mask':mask})
 
     def test_diagnostic_rejects_external_unknown_hosts_and_unapproved_ports_before_socket(self):
         with patch.object(nm.socket, 'create_connection') as connect:
-            for ip, port in [('8.8.8.8',80),('192.168.100.12',80),('192.168.100.254',22),('127.0.0.1',80)]:
+            for ip, port in [('8.8.8.8',80),('192.168.50.12',80),('192.168.50.254',22),('127.0.0.1',80)]:
                 with self.assertRaises(GatewayError): nm.tcp_diagnostic(CURRENT, [], ip, port)
             connect.assert_not_called()
 
     def test_refusal_is_not_presented_as_network_isolation(self):
         with patch.object(nm.socket,'create_connection',side_effect=ConnectionRefusedError()):
-            result = nm.tcp_diagnostic(CURRENT, [], '192.168.100.254', 80)
+            result = nm.tcp_diagnostic(CURRENT, [], '192.168.50.254', 80)
         self.assertEqual(result['outcome'], 'refused')
         self.assertIn('não comprova isolamento', result['description'])
 
@@ -183,10 +183,10 @@ class ObservationTests(unittest.TestCase):
     def setUp(self): self.db = sqlite3.connect(':memory:'); nm.schema(self.db)
     def tearDown(self): self.db.close()
     def test_baseline_and_unchanged_samples_produce_no_events(self):
-        sample = [{'mac':MAC,'status':'online','ip':'192.168.100.12','port':'SSID1'}]
+        sample = [{'mac':MAC,'status':'online','ip':'192.168.50.12','port':'SSID1'}]
         nm.observe_devices(self.db,'gw',sample); nm.observe_devices(self.db,'gw',sample)
         self.assertEqual(nm.history(self.db,'gw')['events'], [])
-        sample[0]['ip'] = '192.168.100.13'; nm.observe_devices(self.db,'gw',sample)
+        sample[0]['ip'] = '192.168.50.13'; nm.observe_devices(self.db,'gw',sample)
         nm.observe_devices(self.db,'gw',[]); nm.observe_devices(self.db,'gw',[])
         self.assertEqual([row['kind'] for row in nm.history(self.db,'gw')['events']], ['disconnected','ip_changed'])
         self.assertEqual(nm.history(self.db,'other')['events'], [])
@@ -200,7 +200,7 @@ class ObservationTests(unittest.TestCase):
         self.assertEqual(len(nm.history(self.db,'gw',query='Test 3')['events']),1)
 
     def test_failed_page_does_not_create_configuration_change(self):
-        first = {'id':'lan_address','label':'LAN','status':'available','recognized':True,'observations':[{'label':'IP','value':'192.168.100.254','field':'ip'}]}
+        first = {'id':'lan_address','label':'LAN','status':'available','recognized':True,'observations':[{'label':'IP','value':'192.168.50.254','field':'ip'}]}
         nm.observe_pages(self.db,'gw',[first]);nm.observe_pages(self.db,'gw',[{'id':'lan_address','status':'unavailable'}]);nm.observe_pages(self.db,'gw',[first])
         self.assertEqual(nm.history(self.db,'gw')['events'], [])
 
@@ -284,7 +284,7 @@ class NetworkHttpTests(unittest.TestCase):
             self.assertEqual(status,400); self.assertIn('error',json.loads(data))
         self.assertEqual(self.gateway.writes,[])
     def test_records_save_route_preserves_csrf_check(self):
-        body={'kind':'dns','action':'save','name':'printer.home.arpa','ip':'192.168.100.20','expected':self.gateway.local_records('dns')['expected'],'confirm':'APLICAR'}
+        body={'kind':'dns','action':'save','name':'printer.home.arpa','ip':'192.168.50.20','expected':self.gateway.local_records('dns')['expected'],'confirm':'APLICAR'}
         status, data = self.request('/api/local-records',body,origin='http://other.invalid')
         self.assertEqual(status,400)
         self.assertEqual(self.gateway.writes,[])

@@ -40,7 +40,7 @@ class RadioOptionsTests(unittest.TestCase):
             with self.assertRaises(GatewayError): preview_radio(target, body)
 
     def test_preview_never_calls_write_and_never_advertises_apply(self):
-        gateway = Gateway('192.168.100.254')
+        gateway = Gateway('192.168.50.254')
         target = {**RADIO, 'channel_options': options_for(IDENTITY, True, RADIO)}
         with patch.object(gateway, 'radio_config', return_value=[target]), patch.object(gateway, 'request') as request:
             result = gateway.preview_radio_change({'id': RADIO['id'], 'expected': 'snapshot', 'width_code': '1', 'channel': '165'})
@@ -48,7 +48,7 @@ class RadioOptionsTests(unittest.TestCase):
             request.assert_not_called()
 
     def test_channel_fields_cannot_be_smuggled_into_power_write(self):
-        gateway = Gateway('192.168.100.254')
+        gateway = Gateway('192.168.50.254')
         with patch.object(gateway, 'radio_config',return_value=[]), patch.object(gateway, 'request') as request:
             with self.assertRaisesRegex(GatewayError, 'Contrato de rádio'):
                 gateway.save_radio({'confirm': 'WIFI', 'power': '80', 'channel': '36'})

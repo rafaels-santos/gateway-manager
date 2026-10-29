@@ -4,7 +4,7 @@ import sqlite3
 import unittest
 import urllib.parse
 
-import network_management as nm
+from services import network_management as nm
 from gateway_adapters.errors import GatewayError
 from gateway_adapters.huawei import Gateway
 from gateway_adapters.huawei.lan_change import PRIMARY, RESERVATION
@@ -12,7 +12,7 @@ from gateway_adapters.huawei.lan_change import PRIMARY, RESERVATION
 
 class SimulatedLanGateway(Gateway):
     router = None
-    def __init__(self,address='192.168.100.254'):
+    def __init__(self,address='192.168.50.254'):
         super().__init__(address)
         self.credentials=('demo','not-a-real-password')
     def login(self,user,password):
@@ -39,7 +39,7 @@ class SimulatedLanGateway(Gateway):
             return 'OK'
         if path.endswith('GetRandToken.asp'): return 'x'*32
         if path.endswith('/ethinfo.asp'):
-            mac='02:00:00:00:00:09' if state.get('wrong_identity') and self.base==state['base'] and self.base!='http://192.168.100.254' else '02:00:00:00:00:01'
+            mac='02:00:00:00:00:09' if state.get('wrong_identity') and self.base==state['base'] and self.base!='http://192.168.50.254' else '02:00:00:00:00:01'
             return 'new DeviceLanMAC("InternetGatewayDevice.DeviceInfo",'+json.dumps(mac)+',"")'
         if path.endswith('/dhcp.asp'):
             row=[PRIMARY,'1',state['dhcp']['lan_ip'],state['dhcp']['mask'],'1']
@@ -49,9 +49,9 @@ class SimulatedLanGateway(Gateway):
 
 class LanChangeTests(unittest.TestCase):
     def setUp(self):
-        SimulatedLanGateway.router={'base':'http://192.168.100.254','commands':[],
-            'dhcp':{'lan_ip':'192.168.100.254','mask':'255.255.255.0','start':'192.168.100.1','end':'192.168.100.200','enabled':True,'lease':'3600','dns_primary':'192.168.100.10','dns_secondary':''},
-            'reservations':[{'id':RESERVATION+'.1','mac':'02:01:02:03:04:05','ip':'192.168.100.50','enabled':True}]}
+        SimulatedLanGateway.router={'base':'http://192.168.50.254','commands':[],
+            'dhcp':{'lan_ip':'192.168.50.254','mask':'255.255.255.0','start':'192.168.50.1','end':'192.168.50.200','enabled':True,'lease':'3600','dns_primary':'192.168.50.10','dns_secondary':''},
+            'reservations':[{'id':RESERVATION+'.1','mac':'02:01:02:03:04:05','ip':'192.168.50.50','enabled':True}]}
         self.gateway=SimulatedLanGateway()
         self.body={'ip':'192.168.101.254','mask':'255.255.255.0','start':'192.168.101.1','end':'192.168.101.200','migrate_reservations':True,'confirm':'ALTERAR LAN','confirm_ip':'192.168.101.254'}
     def submission(self): return {**self.body,'expected':self.gateway.plan_lan_change(self.body)['expected']}
@@ -62,7 +62,7 @@ class LanChangeTests(unittest.TestCase):
         self.assertEqual(len(self.gateway.router['commands']),1)
         params=self.gateway.router['commands'][0][1]
         self.assertEqual(set(params),{'x.IPInterfaceIPAddress','x.IPInterfaceSubnetMask','z.MinAddress','z.MaxAddress','r0.Yiaddr','x.X_HW_Token'})
-        self.assertEqual(self.gateway.base,'http://192.168.100.254')
+        self.assertEqual(self.gateway.base,'http://192.168.50.254')
     def test_timeout_after_committed_write_is_verified_without_resending(self):
         self.gateway.router['drop_after_write']=True
         result=self.gateway.apply_lan_change(self.submission())
@@ -81,7 +81,7 @@ class LanChangeTests(unittest.TestCase):
             self.setUp();self.gateway.router[flag]=True
             result=self.gateway.apply_lan_change(self.submission())
             self.assertFalse(result['verified']);self.assertNotIn('replacement',result)
-            self.assertEqual(self.gateway.base,'http://192.168.100.254')
+            self.assertEqual(self.gateway.base,'http://192.168.50.254')
     def test_stale_preview_and_missing_typed_confirmation_prevent_commands(self):
         body=self.submission();self.gateway.router['dhcp']['lease']='7200'
         with self.assertRaisesRegex(GatewayError,'mudou'):self.gateway.apply_lan_change(body)
@@ -103,12 +103,12 @@ class LanChangeTests(unittest.TestCase):
             self.gateway.router['unreachable']=True
             self.gateway.apply_lan_change(self.submission(),journal=lambda plan:nm.journal_lan_change(db,self.gateway.base,plan))
             restored=nm.restore_lan_journal(db,'http://192.168.101.254')
-            self.assertEqual(restored['storage_source'],'http://192.168.100.254')
+            self.assertEqual(restored['storage_source'],'http://192.168.50.254')
             self.assertNotIn('not-a-real-password',json.dumps(restored))
     def test_local_data_migration_is_scoped_and_conflicts_do_not_overwrite(self):
         with sqlite3.connect(':memory:') as db:
             nm.schema(db);db.execute('CREATE TABLE labels(gateway TEXT,mac TEXT,name TEXT,PRIMARY KEY(gateway,mac))')
-            old,new='http://192.168.100.254','http://192.168.101.254'
+            old,new='http://192.168.50.254','http://192.168.101.254'
             db.execute('INSERT INTO labels VALUES (?,?,?)',(old,'02:01:02:03:04:05','Printer'))
             nm.journal_lan_change(db,old,self.gateway.plan_lan_change(self.body))
             nm.move_gateway_state(db,old,new)

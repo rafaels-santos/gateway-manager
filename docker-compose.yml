@@ -1,22 +1,48 @@
 services:
   gateway-manager:
     image: ghcr.io/rafaels-santos/gateway-manager:latest
+    restart: unless-stopped
+    init: true
+    pull_policy: always
     ports:
-      - "8080:8080"
+      - "${GATEWAY_MANAGER_PORT:-8080}:8080"
+    environment:
+      DATA_DIR: /data
+      PORT: "8080"
+      PYTHONUNBUFFERED: "1"
+      COOKIE_SECURE: "${COOKIE_SECURE:-0}"
     volumes:
       - gateway-manager-data:/data
-    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 30s
+
 volumes:
   gateway-manager-data:
+
 x-casaos:
   main: gateway-manager
   title:
-    en_US: Gateway Manager
     en_us: Gateway Manager
-    pt_BR: Gateway Manager
     pt_br: Gateway Manager
   category: Network
   scheme: http
   index: /
-  port_map: "8080"
-  icon: https://raw.githubusercontent.com/rafaels-santos/gateway-manager/60bdd37/static/icon.png
+  port_map: "${GATEWAY_MANAGER_PORT:-8080}"
+  icon: https://raw.githubusercontent.com/rafaels-santos/gateway-manager/master/static/icon.png

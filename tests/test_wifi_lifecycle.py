@@ -12,7 +12,7 @@ KEY = 'FixtureNewKey!123'
 
 class LifecycleGateway(Gateway):
     def __init__(self):
-        super().__init__('192.168.100.254')
+        super().__init__('192.168.50.254')
         self.identity = {'hardware': '343D.D', 'firmware': 'V5R024C10S106'}
         self.db = sqlite3.connect(':memory:')
         self.label_store_factory = lambda: self.db

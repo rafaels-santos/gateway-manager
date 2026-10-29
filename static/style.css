@@ -41,7 +41,7 @@ select{font:inherit;color:#f1efec;background:#191a19;border:1px solid #343431;bo
 .sidebar nav.compact-navigation{display:flex;flex-direction:column;gap:5px;margin-top:34px}
 .compact-navigation .nav-item{padding:13px 12px}.compact-navigation .nav-item:hover{background:#1b1c19;color:#e8e0d5}
 .compact-navigation .nav-item.active{background:#302c26;color:#f2e8dc}
-.release-preview{display:inline-block;margin-top:5px;font-size:10px;color:#b5a591}
+
 .workspace-header{max-width:1300px;margin:0 auto;padding:22px 40px 0}
 .workspace-tabs{display:flex;gap:5px;overflow-x:auto;border-bottom:1px solid #30312b;padding-bottom:10px;scrollbar-width:thin}
 .workspace-tab{flex:none;border:1px solid transparent;border-radius:9px;background:transparent;color:#999b90;padding:10px 14px;font-size:12px;white-space:nowrap}

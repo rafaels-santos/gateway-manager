@@ -4,18 +4,18 @@ from unittest.mock import patch, Mock
 import app
 from app import Gateway, GatewayError, DOMAIN
 
-PAGE = r'''<script>var Dhcps = new Array(new stDhcp("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress.1","1","192\x2e168\x2e100\x2e100","aa\x3abb\x3acc\x3add\x3aee\x3aff"),null); getValue('onttoken');</script>'''
+PAGE = r'''<script>var Dhcps = new Array(new stDhcp("InternetGatewayDevice.LANDevice.1.LANHostConfigManagement.DHCPStaticAddress.1","1","192\x2e168\x2e50\x2e100","aa\x3abb\x3acc\x3add\x3aee\x3aff"),null); getValue('onttoken');</script>'''
 
 class FakeGateway(Gateway):
     def __init__(self):
-        super().__init__('192.168.100.254')
+        super().__init__('192.168.50.254')
         self.page = PAGE
         self.writes = []
     def request(self, path, data=None, **kwargs):
         if path.endswith('GetRandToken.asp'): return 'a' * 32
         if path.startswith('/set.cgi'):
             self.writes.append((path, data))
-            self.page = self.page.replace(r'192\x2e168\x2e100\x2e100', r'192\x2e168\x2e100\x2e101')
+            self.page = self.page.replace(r'192\x2e168\x2e50\x2e100', r'192\x2e168\x2e50\x2e101')
             return 'ok'
         return self.page
 
@@ -137,7 +137,7 @@ class GatewayTests(unittest.TestCase):
                 write.assert_not_called()
     def test_gateway_registry_rejects_unknown_model_before_connecting(self):
         with self.assertRaises(GatewayError):
-            app.create_gateway('outro-modelo', '192.168.100.254')
+            app.create_gateway('outro-modelo', '192.168.50.254')
     def test_gateway_registry_supports_new_adapters(self):
         class Adapter:
             model_label = 'Modelo de teste'
@@ -214,15 +214,15 @@ class GatewayTests(unittest.TestCase):
         self.assertIn(b'device-dialog', handler.wfile.getvalue())
     def test_parse_encoded_values(self):
         rows, _ = FakeGateway().reservations()
-        self.assertEqual(rows, [{'id': DOMAIN + '.1', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.100.100', 'enabled': True}])
+        self.assertEqual(rows, [{'id': DOMAIN + '.1', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.50.100', 'enabled': True}])
     def test_update_and_verify(self):
         gw = FakeGateway()
-        gw.save({'id': DOMAIN + '.1', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.100.101'})
-        self.assertEqual(gw.writes[0][1]['x.Yiaddr'], '192.168.100.101')
+        gw.save({'id': DOMAIN + '.1', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.50.101'})
+        self.assertEqual(gw.writes[0][1]['x.Yiaddr'], '192.168.50.101')
     def test_invalid_target_does_not_write(self):
         gw = FakeGateway()
         with self.assertRaises(GatewayError):
-            gw.save({'id': DOMAIN + '.99', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.100.101'})
+            gw.save({'id': DOMAIN + '.99', 'mac': 'aa:bb:cc:dd:ee:ff', 'ip': '192.168.50.101'})
         self.assertEqual(gw.writes, [])
     def test_utf8_bom_removed_from_gateway_token(self):
         class Response:
@@ -231,7 +231,7 @@ class GatewayTests(unittest.TestCase):
             def read(self, limit): return b"\xef\xbb\xbf" + b"a" * 64
         class Opener:
             def open(self, req, timeout): return Response()
-        gw = Gateway('192.168.100.254')
+        gw = Gateway('192.168.50.254')
         gw.opener = Opener()
         self.assertEqual(gw.request('/asp/GetRandCount.asp', {}, xhr=True), 'a' * 64)
     def test_device_list_deduplicates_branches_and_decodes_fields(self):
@@ -322,9 +322,9 @@ class GatewayTests(unittest.TestCase):
                 self.assertEqual(send.call_count,2)
     def test_reservations_show_gateway_names_and_shared_labels_by_mac(self):
         reservations = [{'mac': 'AA:BB:CC:DD:EE:FF', 'ip': '192.168.1.10'}]
-        devices = [{'mac':'aa:bb:cc:dd:ee:ff','hostname':'Notebook','gateway_name':'EscritÃ³rio','status':'online'}]
+        devices = [{'mac':'aa:bb:cc:dd:ee:ff','hostname':'Notebook','gateway_name':'Escritório','status':'online'}]
         result = app.enrich_reservations(reservations, devices, {'aa:bb:cc:dd:ee:ff':'Trabalho'})
-        self.assertEqual((result[0]['hostname'], result[0]['gateway_name'], result[0]['name']), ('Notebook','EscritÃ³rio','Trabalho'))
+        self.assertEqual((result[0]['hostname'], result[0]['gateway_name'], result[0]['name']), ('Notebook','Escritório','Trabalho'))
     def test_reservations_keep_local_labels_without_device_data(self):
         result = app.enrich_reservations([{'mac':'aa:bb:cc:dd:ee:ff'}], [], {'aa:bb:cc:dd:ee:ff':'Sala'})
         self.assertEqual((result[0]['hostname'],result[0]['name']), ('','Sala'))
@@ -332,8 +332,8 @@ class GatewayTests(unittest.TestCase):
         with self.assertRaises(GatewayError): Gateway('8.8.8.8')
 
     def test_editing_a_disabled_reservation_preserves_its_state(self):
-        gw=FakeGateway();row={'id':DOMAIN+'.1','mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.100.100','enabled':False}
-        updated={**row,'ip':'192.168.100.101'}
+        gw=FakeGateway();row={'id':DOMAIN+'.1','mac':'aa:bb:cc:dd:ee:ff','ip':'192.168.50.100','enabled':False}
+        updated={**row,'ip':'192.168.50.101'}
         gw.reservations=Mock(side_effect=[([row],'page'),([updated],'page')])
         with patch.object(gw,'request',return_value='a'*32) as request:
             gw.save({'id':row['id'],'mac':row['mac'],'ip':updated['ip']})
@@ -342,14 +342,14 @@ class GatewayTests(unittest.TestCase):
 class PortableConfigTests(unittest.TestCase):
     mac='aa:bb:cc:dd:ee:ff'
     config={'format':app.PORTABLE_CONFIG_FORMAT,'version':1,'devices':[{'mac':mac,'name':'Sala','tag':'IoT'}],
-            'reservations':[{'mac':mac,'ip':'192.168.100.120','enabled':True}]}
+            'reservations':[{'mac':mac,'ip':'192.168.50.120','enabled':True}]}
 
     def gateway(self):
         gw=FakeGateway()
         gw.current_reservations=[];gw.current_devices=[];gw.saved_reservations=[]
         gw.reservations=lambda:(gw.current_reservations,'')
         gw.devices=lambda:gw.current_devices
-        gw.dhcp_config=lambda:{'lan_ip':'192.168.100.254','mask':'255.255.255.0','start':'192.168.100.2','end':'192.168.100.253'}
+        gw.dhcp_config=lambda:{'lan_ip':'192.168.50.254','mask':'255.255.255.0','start':'192.168.50.2','end':'192.168.50.253'}
         gw.save=lambda body:gw.saved_reservations.append(body.copy())
         return gw
 
@@ -373,10 +373,10 @@ class PortableConfigTests(unittest.TestCase):
                 self.assertEqual(db.execute('SELECT tag FROM device_tags WHERE gateway=? AND mac=?',(gw.base,self.mac)).fetchone()[0],'IoT')
         self.assertEqual(result['devices']['imported'],1)
         self.assertEqual(result['reservations']['added'],1)
-        self.assertEqual(gw.saved_reservations[0]['ip'],'192.168.100.120')
+        self.assertEqual(gw.saved_reservations[0]['ip'],'192.168.50.120')
 
     def test_existing_entries_are_preserved_unless_replacement_selected(self):
-        gw=self.gateway();gw.current_reservations=[{'id':DOMAIN+'.1','mac':self.mac,'ip':'192.168.100.121','enabled':True}]
+        gw=self.gateway();gw.current_reservations=[{'id':DOMAIN+'.1','mac':self.mac,'ip':'192.168.50.121','enabled':True}]
         with tempfile.TemporaryDirectory(dir=app.ROOT) as directory, patch.object(app,'DATA_DIR',app.Path(directory)):
             with app.labels() as db:db.execute('INSERT INTO labels VALUES (?,?,?)',(gw.base,self.mac,'Nome atual'))
             preserved=app.apply_portable_config(gw,self.config,import_devices=True,import_reservations=True)
@@ -390,7 +390,7 @@ class PortableConfigTests(unittest.TestCase):
         self.assertEqual(gw.saved_reservations[0]['id'],DOMAIN+'.1')
 
     def test_export_contains_only_portable_network_data(self):
-        gw=self.gateway();gw.current_reservations=[{'id':DOMAIN+'.1','mac':self.mac,'ip':'192.168.100.120','enabled':True}]
+        gw=self.gateway();gw.current_reservations=[{'id':DOMAIN+'.1','mac':self.mac,'ip':'192.168.50.120','enabled':True}]
         with tempfile.TemporaryDirectory(dir=app.ROOT) as directory, patch.object(app,'DATA_DIR',app.Path(directory)):
             with app.labels() as db:
                 db.execute('INSERT INTO labels VALUES (?,?,?)',(gw.base,self.mac,'Sala'))

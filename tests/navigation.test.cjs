@@ -37,6 +37,18 @@ test('Wi-Fi selection uses object identity, supports shared security and recover
   assert.equal(model.matchesNetwork({id:'ssid.1'},''),false);
 });
 
+test('networks are ordered by primary bands, additional networks and guests, without mutating input',()=>{
+  const rows=[
+    {id:'guest',ssid:'A',guest:true,band:'2G'},
+    {id:'extra-1',ssid:'Z',band:'2G'},
+    {id:'main-5',ssid:'Same name',primary:true,band:'5G'},
+    {id:'main-2',ssid:'Same name',primary:true,band:'2G'},
+    {id:'extra-2',ssid:'B',band:'5G'}
+  ];
+  assert.deepEqual(model.sortWifiNetworks(rows).map(row=>row.id),['main-2','main-5','extra-1','extra-2','guest']);
+  assert.equal(rows[0].id,'guest');
+});
+
 function element(dataset={}){
   const values=new Set(),attrs={};
   return {dataset,hidden:false,textContent:'',classList:{toggle(key,on){on?values.add(key):values.delete(key);},contains(key){return values.has(key);}},setAttribute(k,v){attrs[k]=v;},removeAttribute(k){delete attrs[k];},attrs};

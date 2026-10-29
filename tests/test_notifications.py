@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import app
-import notifications
+from services import notifications
 
 
 class NotificationTests(unittest.TestCase):

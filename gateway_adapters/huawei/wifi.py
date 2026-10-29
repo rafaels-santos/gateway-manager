@@ -12,6 +12,10 @@ class HuaweiWifiOperations:
         rows = parse_wifi_page(page, SSID_MAP)
         for row in rows:
             row['max_clients_writable'] = 'y.X_HW_AssociateNum' in page
+            index = int(row['id'].rsplit('.', 1)[-1])
+            row['primary'] = index in (1, 5)
+            row['band'] = '2G' if index <= 4 else '5G'
+            row['guest'] = 'Convidados' in row['network']
             row['managed_by_mesh'] = row['ssid'].casefold().startswith('easymesh_backhaul')
         return rows
     def save_wifi(self, body):

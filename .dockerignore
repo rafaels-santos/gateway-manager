@@ -1,2 +1,17 @@
-__pycache__/
-.git/
+# Build context contains runtime sources only, never local state or credentials.
+*
+!Dockerfile
+!app.py
+!services/
+!services/**
+!gateway_adapters/
+!gateway_adapters/**
+!static/
+!static/**
+**/__pycache__/
+**/*.py[cod]
+**/*.db
+**/*.log
+**/.env*
+**/*.pem
+**/*.key
