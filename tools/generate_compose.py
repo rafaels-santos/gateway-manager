@@ -19,14 +19,16 @@ def inspect_container(name):
         output = subprocess.check_output(['docker', 'inspect', '--format', template, name], stderr=subprocess.DEVNULL, text=True)
         mounts, ports, project, container_name = output.strip().splitlines()
         data = [item for item in json.loads(mounts) if item['Destination'] == '/data']
-        published = {item['HostPort'] for item in (json.loads(ports).get('8080/tcp') or [])}
+        bindings = json.loads(ports).get('8080/tcp') or []
+        published = {item['HostPort'] for item in bindings}
+        host_ips = sorted({str(ipaddress.ip_address(item['HostIp'])) for item in bindings})
         if len(data) != 1 or len(published) != 1 or project == '<no value>': raise ValueError()
         mount = data[0]
         if mount['Type'] not in ('volume', 'bind') or not mount.get('RW', True): raise ValueError()
         return {'project': project, 'port': int(published.pop()),
                 'volume': mount.get('Name') if mount['Type'] == 'volume' else None,
                 'bind': mount['Source'] if mount['Type'] == 'bind' else None,
-                'container_name': container_name.lstrip('/')}
+                'container_name': container_name.lstrip('/'), 'host_ips': host_ips}
     except (OSError, subprocess.CalledProcessError, ValueError, KeyError, TypeError):
         raise ValueError('Não foi possível identificar projeto, porta e armazenamento do contêiner. Verifique o acesso ao Docker; nenhum arquivo foi gerado.')
 
@@ -45,7 +47,7 @@ def quoted(value):
     return json.dumps(str(value).replace('$', '$$'), ensure_ascii=False)
 
 
-def render(template, *, project, port, address='', username='', volume='gateway-manager-data', bind=None, external=False, password=None, container_name=None):
+def render(template, *, project, port, address='', username='', volume='gateway-manager-data', bind=None, external=False, password=None, container_name=None, host_ips=None):
     if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', project): raise ValueError('Nome de projeto inválido.')
     if not 1 <= int(port) <= 65535: raise ValueError('Porta inválida.')
     if address:
@@ -56,6 +58,13 @@ def render(template, *, project, port, address='', username='', volume='gateway-
             raise ValueError('Use um IP privado de gateway, sem credenciais na URL.')
         parsed.port  # Validate the optional port.
     if not bind and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', volume): raise ValueError('Nome de volume inválido.')
+    if host_ips and set(host_ips) != {'0.0.0.0','::'}:
+        mappings = []
+        for address_ip in host_ips:
+            host_ip = ipaddress.ip_address(address_ip)
+            host = f'[{host_ip}]' if host_ip.version == 6 else str(host_ip)
+            mappings.append('      - ' + quoted(f'{host}:{int(port)}:8080'))
+        template = template.replace('      - "${GATEWAY_MANAGER_PORT:-8080}:8080"', '\n'.join(mappings))
     replacements = {'"${GATEWAY_MANAGER_PROJECT:-gateway-manager}"': quoted(project),
                     '${GATEWAY_MANAGER_PORT:-8080}': str(int(port)),
                     '"${GATEWAY_ADDRESS:-}"': quoted(address),

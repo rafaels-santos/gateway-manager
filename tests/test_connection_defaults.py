@@ -124,13 +124,13 @@ class ComposeGeneratorTests(unittest.TestCase):
     def setUp(self): self.template=(compose.ROOT/'docker-compose.yml').read_text(encoding='utf-8')
 
     def test_existing_volume_project_and_port_are_preserved_without_reading_secrets(self):
-        metadata='[{"Type":"volume","Name":"existing_data","Destination":"/data","RW":true}]\n{"8080/tcp":[{"HostPort":"8089"}]}\nexisting_project\n/gateway-manager\n'
+        metadata='[{"Type":"volume","Name":"existing_data","Destination":"/data","RW":true}]\n{"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"8089"}]}\nexisting_project\n/gateway-manager\n'
         with patch.object(compose.subprocess,'check_output',return_value=metadata) as command:
             detected=compose.inspect_container('gateway-manager')
         self.assertNotIn('.Config.Env',str(command.call_args))
         rendered=compose.render(self.template,external=True,**detected)
         self.assertIn('name: "existing_project"',rendered)
-        self.assertIn('"8089:8080"',rendered)
+        self.assertIn('"127.0.0.1:8089:8080"',rendered)
         self.assertIn('external: true\n    name: "existing_data"',rendered)
         self.assertIn('container_name: "gateway-manager"',rendered)
         self.assertNotIn('/var/run/docker.sock',rendered)
@@ -138,7 +138,7 @@ class ComposeGeneratorTests(unittest.TestCase):
         self.assertIn('watchtower.enable: "false"',rendered)
 
     def test_missing_or_ambiguous_storage_refuses_to_generate_new_empty_volume(self):
-        with patch.object(compose.subprocess,'check_output',return_value='[]\n{"8080/tcp":[{"HostPort":"8089"}]}\nexisting\n/app'):
+        with patch.object(compose.subprocess,'check_output',return_value='[]\n{"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"8089"}]}\nexisting\n/app'):
             with self.assertRaises(ValueError): compose.inspect_container('gateway-manager')
 
     def test_bind_mount_is_preserved_without_creating_unrelated_named_volume(self):
