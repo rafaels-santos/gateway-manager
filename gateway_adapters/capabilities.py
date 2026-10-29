@@ -23,6 +23,7 @@ FEATURES = {
     'mesh_topology': ('Topologia EasyMesh', '/html/amp/wlaninfo/easymeshTopo.asp', True, False),
     'port_mode': ('Modo Layer 2/3', 'Link interno descoberto no menu da sessão', True, False),
     'wifi_radio': ('Parâmetros de rádio', '/html/amp/wlanadv/wlanadvance_api.asp · potência para personalização validada', True, True),
+    'wifi_lifecycle': ('Criação e exclusão de redes', 'WlanBasic.asp · criação desativada e exclusão em duas etapas', True, True),
     'wifi_coverage': ('Cobertura Wi-Fi', 'Link interno descoberto no menu da sessão', True, False),
 }
 

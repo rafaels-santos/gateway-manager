@@ -30,3 +30,14 @@ Observações em modo somente leitura no firmware V5R024C10S106. Nenhuma configu
 - EasyMesh: `var staInfo` contém texto JSON com `mac_address`, `station_info`, `station_mac`, `child_devices` e `link`. O parser usa JSON, sem executar JavaScript; mantém Station separado de Controller/Agent.
 
 Estas notas registram inspeção de código/controles e testes simulados. Nenhuma operação de configuração descrita foi aplicada no roteador nesta execução.
+# Continuação de leitura: exclusão de SSIDs e prévia de rádio
+
+Inspeção autenticada em 28/10/2026, sem aplicação no equipamento:
+
+- Em `WlanBasic.asp`, `clickRemove` chama `btnRemoveWlanCnt`, que confirma a seleção e chama `delAjaxRequest`.
+- `addDeleteDomain` acrescenta os objetos WLAN selecionados com valor vazio e monta a lista de índices.
+- `delAjaxRequest` primeiro envia `y.DeleteInstArray` para `set.cgi?y=InternetGatewayDevice.X_HW_DEBUG.AMP.ParallelDelSsid`. Só após a resposta chama `del.cgi?RequestFile=html/amp/wlanbasic/WlanBasic.asp` com os objetos selecionados e o token.
+- Se a opção de convidados estiver selecionada, o primeiro envio inclui `z=InternetGatewayDevice.LANDevice.1.X_HW_WLANForGuest.1` (2,4 GHz) ou `.2` (5 GHz) e `z.SSID_IDX=0`. Não inferir que excluir uma linha preserva automaticamente referências de convidados ou cobertura.
+- O HTML anuncia `ssidMaxNum='4'` e contadores `SsidNum` por banda. Os contadores observados incluem redes que não aparecem na tabela básica; não calcular capacidade usando somente as linhas visíveis.
+- As rotinas de rádio estão em scripts externos `../common/wlan_list.asp`, `wlanadvance_com_api.asp` e `wlanadvance_api.asp`. O formulário contém apenas rotinas locais de acompanhamento de processamento. As ações auxiliares precisam ser conferidas antes de habilitar gravação de canal/largura.
+- O aplicativo implementa por enquanto a matriz de opções e sua prévia, com perfil exato e rejeição de combinações inválidas. Alteração de potência continua sendo uma operação separada.

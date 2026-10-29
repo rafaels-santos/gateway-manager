@@ -10,6 +10,7 @@ from ..errors import GatewayError
 from ..parsers import parse_constructors
 from .constants import WIFI_PATH
 from .local_records import fingerprint
+from .radio_options import options_for, preview_radio
 
 RADIO_SOURCE = '/html/amp/wlanadv/wlanadvance_api.asp'
 RADIO_PAGE = '/html/amp/wlanadv/WlanAdvance.asp'
@@ -59,12 +60,23 @@ class HuaweiRadioSecurity:
             public = {'id': row[0], 'band': '2,4 GHz' if row[0].endswith('.1') else '5 GHz', 'standard': row[5],
                       'channel': row[6], 'power': str(row[7]), 'country': row[8], 'auto_channel': row[9] == '1', 'width_code': row[10]}
             if not re.fullmatch(r'\d{1,3}', public['power']): continue
-            result.append({**public, 'expected': fingerprint(public), 'power_options': ['100','80','60','40','20'] if supported else [], 'writable': supported and 'y.TransmitPower' in page})
+            choices = options_for(getattr(self, 'identity', {}) or {}, supported, public)
+            result.append({**public, 'expected': fingerprint(public), 'power_options': ['100','80','60','40','20'] if supported else [], 'writable': supported and 'y.TransmitPower' in page,
+                           'channel_options': choices, 'channel_preview_available': bool(choices),
+                           'channel_write_available': False})
         if not result: raise GatewayError('Dados de rádio indisponíveis ou formato não reconhecido.')
         return result
 
+    def preview_radio_change(self, body):
+        with self.lock:
+            target = next((row for row in self.radio_config() if row['id'] == body.get('id')), None)
+            if not target: raise GatewayError('Rádio não reconhecido.')
+            return preview_radio(target, body)
+
     def save_radio(self, body):
         if body.get('confirm') != 'WIFI': raise GatewayError('Confirme a alteração de rádio.')
+        if 'channel' in body or 'width_code' in body:
+            raise GatewayError('Canal e largura estão disponíveis somente para prévia; o contrato de gravação ainda está em validação.')
         with self.lock:
             target = next((row for row in self.radio_config() if row['id'] == body.get('id')), None)
             if not target or not target['writable']: raise GatewayError('Edição de potência indisponível neste perfil de firmware.')

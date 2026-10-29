@@ -185,7 +185,7 @@ Validação local final desta continuação: **83 testes Python e 5 testes de na
 
 ## Próxima etapa reservada — rádios e ciclo de vida de SSIDs
 
-Não iniciada nesta entrega. O levantamento abaixo foi feito no painel, restaurando os valores dos formulários sem clicar em Aplicar.
+Iniciada pela prévia de canal/largura descrita abaixo. As gravações e o ciclo de vida de SSIDs continuam pendentes. O levantamento abaixo foi feito no painel, restaurando os valores dos formulários sem clicar em Aplicar.
 
 1. Expor canal/largura para `EG8145X6-10`, hardware `343D.D`, firmware `V5R024C10S106`, personalização `BREBG2`, país `BR` e modo `11ax`. Outros perfis exigem nova detecção; não reutilizar uma lista regulatória por suposição.
 2. 2,4 GHz: larguras `0` (auto 20/40), `1` (20) e `2` (40); canais `0` (automático) e 1–13 nas três larguras observadas.
@@ -194,3 +194,22 @@ Não iniciada nesta entrega. O levantamento abaixo foi feito no painel, restaura
 5. Criação: o fluxo nativo usa **`addcfg.cgi`**, objeto `y=InternetGatewayDevice.LANDevice.1.WLANConfiguration`, `y.LowerLayers` e campos do SSID. A criação e a configuração de chave são etapas distintas no painel. Planejar criação desativada, segurança verificável antes da ativação e recuperação de falhas parciais.
 6. Conferir limites por banda, índices reservados, cobertura/EasyMesh e a rotina nativa de exclusão, ainda não capturada. Não liberar remoção nem inferir o comando de exclusão antes disso.
 7. Acrescentar testes de combinações, concorrência, preservação dos campos e falhas parciais; deixar o aceite com clientes reais para janela autorizada.
+
+### Continuação: prévia por banda e exclusão nativa
+
+- A tela Rádios e potência passou a oferecer planejamento de canal/largura por banda. A lista depende da identificação exata do hardware, firmware, país e modo acima; não é aplicada a outros perfis.
+- `POST /api/wifi/radios/preview` relê o rádio, verifica a versão e valida a combinação. Não grava nem anuncia disponibilidade de aplicação. Campos de canal/largura enviados ao endpoint de potência são recusados explicitamente.
+- São diferenciados os automáticos com/sem DFS; canal 165 só é oferecido em 20 MHz. O formulário não presume o escopo automático atual quando essa informação não foi lida.
+- Validação: 105 testes Python e 5 de navegação passaram. Nenhuma escrita foi executada no Huawei e não houve deploy desta continuação.
+- Nova inspeção autenticada confirmou que excluir um SSID não equivale a enviar apenas `del.cgi`: há uma etapa prévia `InternetGatewayDevice.X_HW_DEBUG.AMP.ParallelDelSsid`, com `y.DeleteInstArray`. O fluxo nativo também pode atualizar a referência de convidados. Essas dependências devem ser tratadas antes de liberar remoção.
+
+### Implementação de SSIDs — 29/10/2026
+
+- Nova tela **Wi-Fi → Gerenciar redes**: capacidade por banda informada pelo firmware, criação de rede protegida desativada, recuperação de criação incompleta e exclusão de redes adicionais elegíveis.
+- A criação usa `addcfg.cgi`, inicialmente com Enable e divulgação desativados; só depois configura WPA2/AES, senha e WPS desativado nos objetos novos reconhecidos. Relê o estado e a chave sem devolvê-la. A ativação posterior continua sendo uma ação separada do usuário.
+- Diário local sem senhas protege a recuperação entre sessões e reinícios. Uma rede pendente não pode ser ativada, divulgada ou renomeada pela edição comum antes da confirmação de segurança.
+- A exclusão implementa a preparação ParallelDelSsid e o del.cgi observados, confirmação pelo nome, aceite da desconexão e confirmação separada de referência de convidados quando existente. Redes principais, índices de backhaul, nomes compartilhados e dependências de APs ficam protegidos. A tabela remanescente é relida para verificar preservação.
+- Não há repetição automática de criação/exclusão após resposta ambígua. A recuperação configura somente o objeto desativado já reconhecido; não cria outro SSID.
+- Inventário ganhou exportação autenticada de diagnóstico da integração: somente funções nativas selecionadas de rádio, sem arrays de estado, credenciais ou token da sessão. Funções ambíguas são omitidas.
+- **116 testes Python e 5 testes de navegação passaram**; inclui criação desativada, falha parcial, recuperação persistente, bloqueio de ativação/renomeação pendente, exclusão em duas etapas, dependências e ausência de segredos nas respostas e no diário.
+- Restam os comandos auxiliares de canal/largura e os aceites reais de conectividade/isolamento. Nenhum desses aceites é substituído pelos testes simulados. Nenhuma configuração do Huawei foi aplicada durante o desenvolvimento.

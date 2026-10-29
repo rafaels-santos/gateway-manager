@@ -26,6 +26,9 @@ class HuaweiWifiOperations:
             if not ssid or len(ssid.encode('utf-8')) > 32 or any(ord(c) < 32 for c in ssid): raise GatewayError('Informe um nome Wi-Fi de até 32 bytes.')
             if any(n['ssid'] == ssid and n['id'] != target['id'] for n in existing): raise GatewayError('Já existe uma rede com esse nome.')
             if not isinstance(body.get('enabled'), bool) or not isinstance(body.get('broadcast'), bool): raise GatewayError('Estado da rede inválido.')
+            pending = any(row['id'] == target['id'] or row['ssid'] == target['ssid'] and row['band'] == ('5G' if int(target['id'].split('.')[-1]) >= 5 else '2G') for row in self.provisioning_rows())
+            if pending and (body['enabled'] or body['broadcast'] or ssid != target['ssid']):
+                raise GatewayError('A segurança desta rede ainda não foi confirmada. Conclua a recuperação antes de ativar.')
             params = {'y.SSID': ssid, 'y.Enable': int(body['enabled']), 'y.SSIDAdvertisementEnabled': int(body['broadcast']), 'x.X_HW_Token': self.config_token()}
             maximum = None
             if 'max_clients' in body:

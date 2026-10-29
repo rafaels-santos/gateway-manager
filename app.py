@@ -583,6 +583,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, result)
             except GatewayError as error: self.send_json(400, {'error': str(error)})
             return
+        if self.path == '/api/maintenance/integration-report':
+            try:
+                from gateway_adapters.huawei.integration_report import integration_report
+                gw = self.session()
+                with gw.lock: result = integration_report(gw)
+                self.send_json(200, result)
+            except GatewayError as error: self.send_json(400, {'error': str(error)})
+            return
+        if self.path == '/api/wifi/lifecycle':
+            try:
+                gw = self.session()
+                with gw.lock: result = gw.wifi_lifecycle()
+                record_capability(gw, 'wifi_lifecycle', 'read', 'available')
+                self.send_json(200, result)
+            except GatewayError as error: self.send_json(400, {'error': str(error)})
+            return
         if self.path in ('/api/wifi/security', '/api/wifi/radios'):
             feature = 'wifi_security' if self.path.endswith('security') else 'wifi_radio'
             try:
@@ -834,6 +850,22 @@ class Handler(BaseHTTPRequestHandler):
                 with labels() as db:
                     network_management.event(db, gw.base, 'configuration_changed', 'Alteração de DNS local ou reserva IPv6 confirmada por releitura.', evidence='confirmed')
                 self.send_json(200, result)
+            elif self.path == '/api/wifi/lifecycle':
+                gw = self.session()
+                action = body.get('action')
+                if action == 'create': result = gw.create_wifi_network(body)
+                elif action == 'resume': result = gw.resume_wifi_network(body)
+                elif action == 'delete': result = gw.delete_wifi_network(body)
+                else: raise GatewayError('Operação de rede Wi-Fi inválida.')
+                if result.get('verified'):
+                    record_capability(gw,'wifi_lifecycle','write','verified')
+                    with labels() as db: network_management.event(db,gw.base,'configuration_changed','Operação de rede Wi-Fi confirmada por releitura: '+action+'. Nenhuma chave registrada.',evidence='confirmed')
+                else:
+                    with labels() as db: network_management.event(db,gw.base,'configuration_pending','Criação de rede Wi-Fi aguardando conferência. Mantenha a rede desativada.',level='WAR',evidence='observed')
+                self.send_json(200, result)
+            elif self.path == '/api/wifi/radios/preview':
+                gw = self.session()
+                self.send_json(200, gw.preview_radio_change(body))
             elif self.path in ('/api/wifi/security', '/api/wifi/radios'):
                 gw = self.session()
                 feature = 'wifi_security' if self.path.endswith('security') else 'wifi_radio'
