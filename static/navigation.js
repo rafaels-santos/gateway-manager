@@ -94,6 +94,6 @@
   $('#page-dhcp').classList.add('composed-first');$('#page-reservations').classList.add('composed-next');
   $('#page-dns').classList.add('composed-first');$('#page-static-dns').classList.add('composed-next');
   const badge=node('span','release-preview','Preparação 1.0');$('.sidebar .brand small').append(document.createElement('br'),badge);
-  $('#logout').addEventListener('click',()=>{wifiRows=[];selectedWifi='';wifiGeneration++;renderWifiTabs();for(const key of Object.keys(remembered))delete remembered[key];});
+  $('#logout').addEventListener('click',()=>{wifiRows=[];selectedWifi='';wifiGeneration++;renderWifiTabs();for(const key of Object.keys(remembered))delete remembered[key];update('devices');selectDeviceView('online');});
   update(document.querySelector('.page:not([hidden])')?.id.slice(5)||'devices');
 })();
